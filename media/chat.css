@@ -16,6 +16,9 @@
   --font: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
   --mono: var(--vscode-editor-font-family, ui-monospace, SFMono-Regular, Menlo, monospace);
   --fs: 13px;
+  /* Editor/widget colors are usually opaque; sideBar/input can be translucent in Cursor. */
+  --surface-solid: var(--vscode-editor-background, #1e1e1e);
+  --popover: var(--vscode-editorWidget-background, var(--vscode-menu-background, var(--panel)));
 }
 
 * { box-sizing: border-box; }
@@ -950,7 +953,9 @@ textarea::placeholder { color: var(--muted); }
   flex-direction: column;
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: var(--panel);
+  /* Opaque base + themed overlay: theme vars alone can be translucent. */
+  background-color: var(--surface-solid);
+  background-image: linear-gradient(var(--popover), var(--popover));
   box-shadow: 0 10px 28px color-mix(in srgb, #000 35%, transparent);
 }
 .suggest[hidden] { display: none !important; }
@@ -1082,11 +1087,11 @@ textarea::placeholder { color: var(--muted); }
   flex-direction: column;
   border: 1px solid var(--border);
   border-radius: 12px;
-  /* Force an opaque surface even when VS Code theme vars are translucent. */
-  background-color: var(--bg);
+  /* Opaque base + themed overlay: sideBar/bg alone can stay translucent. */
+  background-color: var(--surface-solid);
   background-image: linear-gradient(
-    color-mix(in srgb, var(--text) 6%, transparent),
-    color-mix(in srgb, var(--text) 6%, transparent)
+    color-mix(in srgb, var(--text) 6%, var(--popover)),
+    color-mix(in srgb, var(--text) 6%, var(--popover))
   );
   box-shadow: 0 12px 32px color-mix(in srgb, #000 50%, transparent);
 }
