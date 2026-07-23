@@ -2,6 +2,10 @@
   "name": "oh-my-pi-chat",
   "displayName": "OMP Chat",
   "description": "Copilot/Cursor-style chat sidebar for OMP (omp) in VS Code",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Chakyiu/omp-vscode"
+  },
   "version": "0.1.0",
   "publisher": "local",
   "license": "MIT",
