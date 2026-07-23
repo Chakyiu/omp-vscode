@@ -327,7 +327,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     <div class="tabstrip" id="tabstrip" aria-label="Chat tabs">
       <div class="tabs" id="tabs"></div>
-      <button id="addTabBtn" class="icon-btn tab-add" title="New tab">＋</button>
+      <button id="addTabBtn" class="icon-btn tab-add" title="New tab" aria-label="New tab">
+        <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path fill="currentColor" d="M8 2a.75.75 0 0 1 .75.75v4.5h4.5a.75.75 0 0 1 0 1.5h-4.5v4.5a.75.75 0 0 1-1.5 0v-4.5h-4.5a.75.75 0 0 1 0-1.5h4.5v-4.5A.75.75 0 0 1 8 2z"/>
+        </svg>
+      </button>
     </div>
 
     <main id="messages" class="messages"></main>

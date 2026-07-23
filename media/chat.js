@@ -251,8 +251,12 @@
         const busy = tab.busy ? " busy" : "";
         return (
           '<button class="tab' + active + busy + '" data-tab-id="' + escapeHtml(tab.id) + '" title="' + escapeHtml(tab.title) + '">' +
-            '<span class="tab-title">' + escapeHtml(tab.title) + '</span>' +
-            '<span class="tab-close" data-action="close-tab" title="Close tab" aria-label="Close tab">×</span>' +
+            '<span class="tab-label"><span class="tab-title">' + escapeHtml(tab.title) + '</span></span>' +
+            '<span class="tab-close" data-action="close-tab" title="Close" aria-label="Close">' +
+              '<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
+                '<path fill="currentColor" d="M8 8.71L3.29 4 2 5.29 6.71 10 2 14.71 3.29 16 8 11.29 12.71 16 14 14.71 9.29 10 14 5.29 12.71 4 8 8.71z"/>' +
+              '</svg>' +
+            '</span>' +
           '</button>'
         );
       })
