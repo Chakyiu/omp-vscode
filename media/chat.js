@@ -158,6 +158,92 @@
     );
   }
 
+  function isTableSeparatorLine(line) {
+    const t = String(line || "").trim();
+    if (!t || t.indexOf("|") < 0) return false;
+    const inner = t.replace(/^\|/, "").replace(/\|$/, "");
+    const cells = inner.split("|");
+    if (!cells.length) return false;
+    return cells.every(function (cell) {
+      return /^\s*:?-{3,}:?\s*$/.test(cell);
+    });
+  }
+
+  function looksLikeTableStart(lines, index) {
+    if (index + 1 >= lines.length) return false;
+    const header = String(lines[index] || "");
+    if (!header.trim() || header.indexOf("|") < 0) return false;
+    if (isTableSeparatorLine(header)) return false;
+    return isTableSeparatorLine(lines[index + 1]);
+  }
+
+  function splitTableCells(line) {
+    let t = String(line || "").trim();
+    if (t.charAt(0) === "|") t = t.slice(1);
+    if (t.charAt(t.length - 1) === "|") t = t.slice(0, -1);
+    const cells = [];
+    let cur = "";
+    for (let i = 0; i < t.length; i++) {
+      const ch = t.charAt(i);
+      if (ch === "\\" && i + 1 < t.length && t.charAt(i + 1) === "|") {
+        cur += "|";
+        i += 1;
+        continue;
+      }
+      if (ch === "|") {
+        cells.push(cur.replace(/^\s+|\s+$/g, ""));
+        cur = "";
+        continue;
+      }
+      cur += ch;
+    }
+    cells.push(cur.replace(/^\s+|\s+$/g, ""));
+    return cells;
+  }
+
+  function parseTableAlignments(sepLine) {
+    return splitTableCells(sepLine).map(function (cell) {
+      const bare = cell.replace(/\s+/g, "");
+      const left = bare.charAt(0) === ":";
+      const right = bare.charAt(bare.length - 1) === ":";
+      if (left && right) return "center";
+      if (right) return "right";
+      if (left) return "left";
+      return "";
+    });
+  }
+
+  function renderMarkdownTable(headerLine, sepLine, bodyLines) {
+    const headers = splitTableCells(headerLine);
+    const aligns = parseTableAlignments(sepLine);
+    let colCount = Math.max(headers.length, aligns.length);
+    for (let r = 0; r < bodyLines.length; r++) {
+      colCount = Math.max(colCount, splitTableCells(bodyLines[r]).length);
+    }
+    if (colCount < 1) colCount = 1;
+
+    function alignStyle(i) {
+      const a = aligns[i] || "";
+      return a ? ' style="text-align:' + a + '"' : "";
+    }
+
+    let html = '<div class="md-table-wrap"><table class="md-table"><thead><tr>';
+    for (let i = 0; i < colCount; i++) {
+      html += "<th" + alignStyle(i) + ">" + renderInlineMarkdown(headers[i] || "") + "</th>";
+    }
+    html += "</tr></thead><tbody>";
+    for (let r = 0; r < bodyLines.length; r++) {
+      const cells = splitTableCells(bodyLines[r]);
+      html += "<tr>";
+      for (let i = 0; i < colCount; i++) {
+        html += "<td" + alignStyle(i) + ">" + renderInlineMarkdown(cells[i] || "") + "</td>";
+      }
+      html += "</tr>";
+    }
+    html += "</tbody></table></div>";
+    return html;
+  }
+
   function renderMarkdownBlocks(src) {
     const lines = String(src || "").replace(/\r\n/g, "\n").split("\n");
     let html = "";
@@ -188,6 +274,25 @@
       if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
         html += "<hr />";
         i += 1;
+        continue;
+      }
+
+      if (looksLikeTableStart(lines, i)) {
+        const headerLine = lines[i];
+        const sepLine = lines[i + 1];
+        i += 2;
+        const body = [];
+        while (i < lines.length) {
+          const cur = lines[i];
+          if (!String(cur).trim()) break;
+          if (String(cur).indexOf("|") < 0) break;
+          if (/^(#{1,6})\s+/.test(cur)) break;
+          if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(cur)) break;
+          if (/^\s*>\s?/.test(cur)) break;
+          body.push(cur);
+          i += 1;
+        }
+        html += renderMarkdownTable(headerLine, sepLine, body);
         continue;
       }
 
@@ -229,6 +334,7 @@
         if (!String(cur).trim()) break;
         if (/^(#{1,6})\s+/.test(cur)) break;
         if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(cur)) break;
+        if (looksLikeTableStart(lines, i)) break;
         if (/^\s*>\s?/.test(cur)) break;
         if (/^\s*([-*+])\s+/.test(cur)) break;
         if (/^\s*\d+\.\s+/.test(cur)) break;

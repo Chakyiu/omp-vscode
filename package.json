@@ -6,7 +6,7 @@
     "type": "git",
     "url": "https://github.com/Chakyiu/omp-vscode"
   },
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "ChakyiuLI",
   "license": "MIT",
   "engines": {
@@ -94,7 +94,7 @@
       },
       {
         "command": "ompChat.attachMenu",
-        "title": "OMP: Attach…",
+        "title": "OMP: Attach\u2026",
         "icon": "$(attach)"
       },
       {
@@ -105,6 +105,11 @@
       {
         "command": "ompChat.showToolLog",
         "title": "OMP: Show File Touch Log",
+        "icon": "$(output)"
+      },
+      {
+        "command": "ompChat.showErrorLog",
+        "title": "OMP: Show Error Log",
         "icon": "$(output)"
       }
     ],

@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { ChatViewProvider } from "./chat/chatViewProvider";
 import { TabManager, type OpenSessionsState } from "./omp/tabManager";
+import { disposeErrorLog, initErrorLog, logError, showErrorLog } from "./omp/errorLog";
 import { disposeToolFileLog, showToolFileLog } from "./omp/toolFileLog";
 
 function workspaceCwd(): string {
@@ -41,6 +42,8 @@ function readOpenSessions(context: vscode.ExtensionContext): OpenSessionsState |
 }
 
 export function activate(context: vscode.ExtensionContext): void {
+  initErrorLog(context);
+
   const openSessionsStore = {
     get(): OpenSessionsState | undefined {
       return readOpenSessions(context);
@@ -73,6 +76,12 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("ompChat.showToolLog", () => {
       showToolFileLog();
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("ompChat.showErrorLog", () => {
+      showErrorLog();
     }),
   );
 
@@ -184,11 +193,12 @@ export function activate(context: vscode.ExtensionContext): void {
     dispose: () => {
       void sessions.dispose();
       disposeToolFileLog();
+      disposeErrorLog();
     },
   });
 
-  void sessions.ensureStarted().catch(() => {
-    // Errors are reflected in status; ignore here.
+  void sessions.ensureStarted().catch((err) => {
+    logError("Failed to start omp session on activate", err);
   });
 }
 

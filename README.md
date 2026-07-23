@@ -67,6 +67,8 @@ Then press **F5** (`Run Extension`) to open an Extension Development Host.
 | `ompChat.showThinking` | Show/hide thinking blocks in UI |
 | `ompChat.logFileTouches` | Log edit/write/delete touched paths to **OMP File Touches** output channel |
 
+Quick error log: Command Palette → **OMP: Show Error Log** (also in the chat ⋯ menu). Entries persist across reloads and auto-clear after 7 days.
+
 ## Architecture
 
 ```

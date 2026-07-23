@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { randomUUID } from "crypto";
 import { OmpRpcClient } from "./rpcClient";
 import { chatMessagesFromOmp, messagesFromSessionFile } from "./sessionHistory";
+import { logError, logWarn } from "./errorLog";
 import { logToolFileTouch } from "./toolFileLog";
 import { collectToolFileRefs, collectToolPaths, preview } from "./toolPaths";
 import type {
@@ -150,11 +151,13 @@ export class SessionManager {
     });
 
     client.on("error", (err) => {
+      logError("omp RPC client error", err);
       this.setStatus({ state: "error", detail: err.message });
     });
 
     client.on("exit", (code) => {
       if (this.status.state !== "stopped") {
+        logError(`omp exited (code ${code ?? "null"})`);
         this.setStatus({
           state: "error",
           detail: `omp exited (code ${code ?? "null"})`,
@@ -165,6 +168,7 @@ export class SessionManager {
     client.on("stderr", (line) => {
       // Surface interesting failures without spamming every line.
       if (/error|fail|not found|ENOENT/i.test(line)) {
+        logWarn(`omp stderr: ${line.slice(0, 500)}`);
         this.setStatus({ state: "error", detail: line.slice(0, 240) });
       }
     });
@@ -175,6 +179,7 @@ export class SessionManager {
       await client.start();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      logError("Failed to start omp RPC session", err);
       this.setStatus({
         state: "error",
         detail: `${message}. Is omp installed and on PATH?`,
@@ -452,6 +457,7 @@ export class SessionManager {
       this.dispatchPrompt(next.composed);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      logError("Failed to send queued prompt", err);
       this.messages = [
         ...this.messages,
         {
@@ -1064,8 +1070,9 @@ export class SessionManager {
       let raw: unknown[] = [];
       try {
         raw = await this.client.getMessages();
-      } catch {
+      } catch (err) {
         // Large sessions often exceed omp's 1 MiB RPC frame limit.
+        logWarn("get_messages failed; falling back to session file", err);
         raw = [];
       }
 
@@ -1082,8 +1089,9 @@ export class SessionManager {
         this.currentAssistantId = undefined;
         this.notify();
       }
-    } catch {
+    } catch (err) {
       // Non-fatal: chat can continue without restored transcript.
+      logError("Failed to restore transcript from omp session", err);
     } finally {
       this.restoringHistory = false;
     }
@@ -1141,8 +1149,9 @@ export class SessionManager {
           : undefined);
       this.contextUsage = this.parseContextUsage(state.contextUsage, fallbackWindow);
       this.notify();
-    } catch {
+    } catch (err) {
       // Non-fatal: UI can keep the last known usage.
+      logWarn("Failed to refresh omp session state", err);
     }
   }
 
@@ -1176,6 +1185,7 @@ export class SessionManager {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      logError("Failed to answer omp UI question", err);
       this.setStatus({ state: "error", detail: message });
     }
     this.notify();
@@ -1204,8 +1214,10 @@ export class SessionManager {
         "Notification";
       const notifyType = String(event.notifyType ?? event.notify_type ?? "info");
       if (notifyType === "error") {
+        logError(`omp notify: ${message}`);
         void vscode.window.showErrorMessage(message);
       } else if (notifyType === "warning") {
+        logWarn(`omp notify: ${message}`);
         void vscode.window.showWarningMessage(message);
       } else {
         void vscode.window.showInformationMessage(message);

@@ -3,6 +3,7 @@ import { AttachmentService } from "../omp/attachmentService";
 import { pickMode, pickModel } from "../omp/modelCatalog";
 import { formatSessionWhen, listOmpSessions } from "../omp/sessionCatalog";
 import type { TabManager } from "../omp/tabManager";
+import { logError, logWarn, showErrorLog } from "../omp/errorLog";
 import { showToolFileLog } from "../omp/toolFileLog";
 import type { FileSuggestItem, HostToWebview, WebviewToHost } from "../omp/types";
 
@@ -132,6 +133,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.postState();
         void this.sessions.ensureStarted().catch((err) => {
           const message = err instanceof Error ? err.message : String(err);
+          logError("Failed to start omp session from webview ready", err);
           this.post({ type: "error", message });
         });
         break;
@@ -243,6 +245,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
+          logWarn(`Could not open link: ${raw}`, err);
           vscode.window.showWarningMessage(`Could not open link: ${message}`);
         }
         break;
@@ -290,6 +293,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
+          logWarn(`Could not open ${msg.path}`, err);
           vscode.window.showWarningMessage(`Could not open ${msg.path}: ${message}`);
         }
         break;
@@ -580,6 +584,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       history = await listOmpSessions(cwd);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      logWarn("Could not load session history", err);
       vscode.window.showWarningMessage(`Could not load session history: ${message}`);
     }
 
@@ -654,6 +659,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         { label: "Select model", description: this.currentModelLabel() },
         { label: "Context usage", description: usageDesc },
         { label: "File touch log", description: "Show edit/write/delete paths" },
+        { label: "Error log", description: "Show OMP Chat errors (auto-clears after 7 days)" },
         { label: "Restart session", description: "Reload omp RPC bridge" },
         { label: "Attach current file" },
         { label: "Attach selection" },
@@ -669,6 +675,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       vscode.window.showInformationMessage(`Context usage: ${usageDesc}`);
     } else if (picked.label === "File touch log") {
       showToolFileLog();
+    } else if (picked.label === "Error log") {
+      showErrorLog();
     } else if (picked.label === "Restart session") {
       await this.restart();
     } else if (picked.label === "Attach current file") {
