@@ -68,7 +68,7 @@ export async function pickModel(ompPath: string, current?: string): Promise<stri
   const models = await listOmpModels(ompPath);
   if (models.length === 0) {
     const typed = await vscode.window.showInputBox({
-      title: "Select Oh My Pi model",
+      title: "Select OMP model",
       prompt: "Could not list models. Type a model id/selector (or leave blank for default).",
       value: current || "",
       placeHolder: "e.g. opus, gpt-5.2, cursor/claude-4.6-sonnet-medium",
@@ -102,7 +102,7 @@ export async function pickModel(ompPath: string, current?: string): Promise<stri
   ];
 
   const picked = await vscode.window.showQuickPick(items, {
-    title: "Select Oh My Pi model",
+    title: "Select OMP model",
     placeHolder: current || "Choose a model",
     matchOnDescription: true,
     matchOnDetail: true,

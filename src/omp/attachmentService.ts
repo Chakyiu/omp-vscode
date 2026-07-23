@@ -80,7 +80,7 @@ export class AttachmentService {
       canSelectFolders: false,
       canSelectMany: true,
       openLabel: "Attach",
-      title: "Attach files to Oh My Pi chat",
+      title: "Attach files to OMP chat",
     });
     if (!uris?.length) {
       return 0;
@@ -99,7 +99,7 @@ export class AttachmentService {
       canSelectFolders: true,
       canSelectMany: false,
       openLabel: "Attach Folder",
-      title: "Attach folder to Oh My Pi chat",
+      title: "Attach folder to OMP chat",
     });
     if (!uris?.length) {
       return 0;
@@ -216,7 +216,7 @@ export class AttachmentService {
         { label: "$(file-code) Attach current file", id: "current" },
         { label: "$(selection) Attach selection", id: "selection" },
       ],
-      { title: "Attach to Oh My Pi chat", placeHolder: "Choose what to attach" },
+      { title: "Attach to OMP chat", placeHolder: "Choose what to attach" },
     );
     if (!pick) {
       return;

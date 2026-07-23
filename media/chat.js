@@ -1,5 +1,6 @@
 (function () {
   const vscode = acquireVsCodeApi();
+  const collapseOpenIds = new Set();
 
   const messagesEl = document.getElementById("messages");
   const emptyEl = document.getElementById("empty");
@@ -42,6 +43,22 @@
   };
 
   let dragDepth = 0;
+  // Follow new output only while the user is already near the bottom.
+  let stickToBottom = true;
+  let activeTabIdForScroll = "";
+
+  function isNearBottom(el, threshold) {
+    if (!el) return true;
+    const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+    return gap <= (threshold == null ? 80 : threshold);
+  }
+
+  function scrollMessagesToBottom(force) {
+    if (!messagesEl) return;
+    if (!force && !stickToBottom) return;
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    stickToBottom = true;
+  }
 
   const SLASH_COMMANDS = [
     { id: "new", label: "/new", detail: "Start a new chat" },
@@ -77,67 +94,563 @@
       .replace(/"/g, "&quot;");
   }
 
+  function isSafeHref(href) {
+    if (!href) return false;
+    const value = String(href).trim();
+    if (!value) return false;
+    if (/^\s*javascript:/i.test(value)) return false;
+    if (/^\s*data:/i.test(value)) return false;
+    return /^(https?:\/\/|vscode:|file:|mailto:|#|\/|\.\/|\.\.\/|[A-Za-z]:\\)/i.test(value) || !/^[a-z][a-z0-9+.-]*:/i.test(value);
+  }
+
+  function renderInlineMarkdown(text) {
+    const codes = [];
+    let s = String(text == null ? "" : text);
+    s = s.replace(/`([^`\n]+)`/g, function (_, code) {
+      codes.push(code);
+      return "\u0000CODE" + (codes.length - 1) + "\u0000";
+    });
+    s = escapeHtml(s);
+
+    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)/g, function (_, label, href, title) {
+      if (!isSafeHref(href)) return label;
+      const titleAttr = title ? ' title="' + escapeHtml(title) + '"' : "";
+      return '<a href="' + escapeHtml(href) + '" data-href="' + escapeHtml(href) + '"' + titleAttr + ">" + label + "</a>";
+    });
+
+    s = s.replace(/~~(.+?)~~/g, "<del>$1</del>");
+    s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+    s = s.replace(/__(.+?)__/g, "<strong>$1</strong>");
+    s = s.replace(/(^|[^\w*])\*(?!\s)([^*\n]+?)(?!\s)\*(?!\*)/g, "$1<em>$2</em>");
+    s = s.replace(/(^|[^\w_])_(?!\s)([^_\n]+?)(?!\s)_(?!_)/g, "$1<em>$2</em>");
+
+    s = s.replace(/\u0000CODE(\d+)\u0000/g, function (_, idx) {
+      return "<code>" + escapeHtml(codes[Number(idx)] || "") + "</code>";
+    });
+    return s;
+  }
+
+  function renderCodeBlock(lang, code) {
+    const clean = String(code || "").replace(/\n$/, "");
+    const safe = escapeHtml(clean);
+    return (
+      '<div class="md-code">' +
+        '<div class="md-pre" data-code="' + encodeURIComponent(clean) + '"><code data-lang="' + escapeHtml(lang || "") + '">' + safe + "</code></div>" +
+        '<div class="code-actions">' +
+          '<button class="mini" data-action="copy-code">Copy</button>' +
+          '<button class="mini" data-action="insert-code">Insert</button>' +
+        "</div>" +
+      "</div>"
+    );
+  }
+
+  function renderMarkdownBlocks(src) {
+    const lines = String(src || "").replace(/\r\n/g, "\n").split("\n");
+    let html = "";
+    let i = 0;
+
+    function flushParagraph(buf) {
+      if (!buf.length) return;
+      const body = buf.map(function (line) { return renderInlineMarkdown(line); }).join("<br>");
+      html += '<p>' + body + "</p>";
+      buf.length = 0;
+    }
+
+    while (i < lines.length) {
+      const line = lines[i];
+      if (!String(line).trim()) {
+        i += 1;
+        continue;
+      }
+
+      const heading = /^(#{1,6})\s+(.+?)\s*$/.exec(line);
+      if (heading) {
+        const level = Math.min(heading[1].length, 4);
+        html += "<h" + level + ">" + renderInlineMarkdown(heading[2]) + "</h" + level + ">";
+        i += 1;
+        continue;
+      }
+
+      if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+        html += "<hr />";
+        i += 1;
+        continue;
+      }
+
+      if (/^\s*>\s?/.test(line)) {
+        const quote = [];
+        while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+          quote.push(lines[i].replace(/^\s*>\s?/, ""));
+          i += 1;
+        }
+        html += "<blockquote>" + renderMarkdownBlocks(quote.join("\n")) + "</blockquote>";
+        continue;
+      }
+
+      if (/^\s*([-*+])\s+/.test(line)) {
+        html += "<ul>";
+        while (i < lines.length && /^\s*([-*+])\s+/.test(lines[i])) {
+          const item = lines[i].replace(/^\s*([-*+])\s+/, "");
+          html += "<li>" + renderInlineMarkdown(item) + "</li>";
+          i += 1;
+        }
+        html += "</ul>";
+        continue;
+      }
+
+      if (/^\s*\d+\.\s+/.test(line)) {
+        html += "<ol>";
+        while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+          const item = lines[i].replace(/^\s*\d+\.\s+/, "");
+          html += "<li>" + renderInlineMarkdown(item) + "</li>";
+          i += 1;
+        }
+        html += "</ol>";
+        continue;
+      }
+
+      const para = [];
+      while (i < lines.length) {
+        const cur = lines[i];
+        if (!String(cur).trim()) break;
+        if (/^(#{1,6})\s+/.test(cur)) break;
+        if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(cur)) break;
+        if (/^\s*>\s?/.test(cur)) break;
+        if (/^\s*([-*+])\s+/.test(cur)) break;
+        if (/^\s*\d+\.\s+/.test(cur)) break;
+        para.push(cur);
+        i += 1;
+      }
+      flushParagraph(para);
+    }
+
+    return html;
+  }
+
   function renderMarkdownish(text) {
-    const parts = String(text).split(/```/);
+    const raw = String(text == null ? "" : text);
+    const parts = raw.split(/```/);
     let html = "";
     for (let i = 0; i < parts.length; i++) {
       if (i % 2 === 0) {
-        html += escapeHtml(parts[i]);
+        html += renderMarkdownBlocks(parts[i]);
       } else {
-        const raw = parts[i];
-        const nl = raw.indexOf("\n");
+        const block = parts[i];
+        const nl = block.indexOf("\n");
         let lang = "";
-        let code = raw;
+        let code = block;
         if (nl >= 0) {
-          lang = raw.slice(0, nl).trim();
-          code = raw.slice(nl + 1);
+          lang = block.slice(0, nl).trim();
+          code = block.slice(nl + 1);
         }
-        const safe = escapeHtml(code.replace(/\n$/, ""));
-        html += `<div class="md-pre" data-code="${encodeURIComponent(code)}"><code data-lang="${escapeHtml(lang)}">${safe}</code></div>`;
-        html += `<div class="code-actions">
-          <button class="mini" data-action="copy-code">Copy</button>
-          <button class="mini" data-action="insert-code">Insert</button>
-        </div>`;
+        html += renderCodeBlock(lang, code);
       }
     }
-    return html;
+    return html || "<p></p>";
   }
 
   function hasTextPart(msg) {
     return Boolean(msg && msg.parts && msg.parts.some(function (p) { return p.kind === "text" && p.text; }));
   }
 
-  function renderPart(part, msg) {
+
+
+  if (messagesEl) {
+    messagesEl.addEventListener("toggle", function (event) {
+      const target = event.target;
+      if (!target || !target.classList || !target.classList.contains("collapse")) return;
+      const id = target.getAttribute("data-collapse-id");
+      if (!id) return;
+      if (target.open) {
+        collapseOpenIds.add(id);
+        collapseOpenIds.delete("closed:" + id);
+      } else {
+        collapseOpenIds.delete(id);
+        collapseOpenIds.add("closed:" + id);
+      }
+    }, true);
+  }
+
+  function isCollapseOpen(id, autoOpen) {
+    if (collapseOpenIds.has(id)) return true;
+    if (collapseOpenIds.has("closed:" + id)) return false;
+    return Boolean(autoOpen);
+  }
+
+  function collapseOpenAttr(id, autoOpen) {
+    return isCollapseOpen(id, autoOpen) ? " open" : "";
+  }
+
+  function chevronIcon() {
+    return (
+      '<svg class="collapse-chevron" viewBox="0 0 16 16" aria-hidden="true">' +
+        '<path fill="currentColor" d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06z"/>' +
+      '</svg>'
+    );
+  }
+
+  function formatDuration(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return "";
+    if (ms < 1000) return "<1s";
+    const sec = Math.round(ms / 1000);
+    if (sec < 60) return sec + "s";
+    const min = Math.floor(sec / 60);
+    const rem = sec % 60;
+    return rem ? min + "m " + rem + "s" : min + "m";
+  }
+
+  function thinkingLabel(part, isLive) {
+    if (isLive) return "Thinking…";
+    const start = Number(part.startedAt);
+    const end = Number(part.endedAt || Date.now());
+    if (Number.isFinite(start) && end >= start) {
+      const dur = formatDuration(end - start);
+      if (dur) return "Thought for " + dur;
+    }
+    return "Thought";
+  }
+
+  function normalizeToolKey(name) {
+    return String(name || "tool").trim().toLowerCase();
+  }
+
+  function toolLeafName(name) {
+    let key = normalizeToolKey(name);
+    // Common wrappers: mcp__server_tool, mcp_pi-agent_mcp__server_tool, server/tool
+    if (key.includes("mcp__")) {
+      key = key.slice(key.lastIndexOf("mcp__") + 5);
+    } else if (key.includes("__")) {
+      key = key.split("__").pop();
+    } else if (key.includes("/")) {
+      key = key.split("/").pop();
+    }
+    key = key.replace(/^mcp[_-]*/, "");
+    return key || "tool";
+  }
+
+  function humanizeWords(value) {
+    return String(value || "")
+      .replace(/[_-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+  }
+
+  function parseToolIdentity(name) {
+    const leaf = toolLeafName(name);
+    const prefixes = [
+      ["obscura_browser_", "Browser"],
+      ["obscura_", "Browser"],
+      ["open_design_", "Design"],
+      ["headroom_", "Headroom"],
+      ["pi-agent_", ""],
+      ["pi_agent_", ""],
+    ];
+    for (let i = 0; i < prefixes.length; i += 1) {
+      const prefix = prefixes[i][0];
+      const group = prefixes[i][1];
+      if (leaf.indexOf(prefix) === 0) {
+        return { leaf: leaf, action: leaf.slice(prefix.length), group: group };
+      }
+    }
+    // open_design-style without trailing underscore already handled; also
+    // browser_navigate / web_search style single tokens.
+    return { leaf: leaf, action: leaf, group: "" };
+  }
+
+  function toolTitle(name, inputPreview) {
+    const key = normalizeToolKey(name);
+    const identity = parseToolIdentity(name);
+    const actionKey = identity.action || identity.leaf || key;
+
+    if (key === "bash" || key === "shell" || actionKey === "bash" || actionKey === "shell") {
+      const obj = parseToolInput(inputPreview);
+      const cmd = obj && (obj.command || obj.cmd);
+      if (typeof cmd === "string") {
+        if (/^\s*ls\b/.test(cmd)) return "Listed directory";
+        if (/^\s*find\b/.test(cmd)) return "Found files";
+        if (/^\s*cat\b/.test(cmd)) return "Read";
+        if (/^\s*rg\b|^\s*grep\b/.test(cmd)) return "Grep";
+      }
+      return "Ran command";
+    }
+
+    const map = {
+      read: "Read",
+      read_file: "Read",
+      get_file: "Read",
+      grep: "Grep",
+      glob: "Searched files",
+      write: "Wrote",
+      write_file: "Wrote",
+      edit: "Edited",
+      strreplace: "Edited",
+      search_replace: "Edited",
+      delete: "Deleted",
+      delete_file: "Deleted",
+      web_search: "Searched web",
+      webfetch: "Fetched",
+      fetch: "Fetched",
+      todo: "Updated todos",
+      todowrite: "Updated todos",
+      navigate: "Navigate",
+      browser_navigate: "Navigate",
+      browser_click: "Click",
+      click: "Click",
+      browser_fill: "Fill",
+      fill: "Fill",
+      browser_type: "Type",
+      type: "Type",
+      browser_snapshot: "Snapshot",
+      snapshot: "Snapshot",
+      browser_screenshot: "Screenshot",
+      screenshot: "Screenshot",
+      browser_scroll: "Scroll",
+      scroll: "Scroll",
+      browser_wait_for: "Wait",
+      wait_for: "Wait",
+      browser_wait_for_text: "Wait for text",
+      wait_for_text: "Wait for text",
+      browser_tabs: "Browser tabs",
+      browser_tab_new: "New tab",
+      browser_tab_close: "Close tab",
+      browser_reload: "Reload",
+      browser_back: "Back",
+      browser_forward: "Forward",
+      get_artifact: "Get artifact",
+      get_project: "Get project",
+      list_files: "List files",
+      list_projects: "List projects",
+      search_files: "Search files",
+      create_artifact: "Create artifact",
+      create_project: "Create project",
+      start_run: "Start run",
+      get_run: "Get run",
+      compress: "Compress",
+      headroom_compress: "Compress",
+      retrieve: "Retrieve",
+      headroom_retrieve: "Retrieve",
+    };
+
+    if (map[key]) return map[key];
+    if (map[identity.leaf]) return map[identity.leaf];
+    if (map[actionKey]) return map[actionKey];
+
+    const pretty = humanizeWords(actionKey);
+    if (identity.group && pretty) {
+      // Keep the title short: action only. Group is implied by wording.
+      return pretty;
+    }
+    return pretty || "Tool";
+  }
+
+  function parseToolInput(preview) {
+    if (!preview) return null;
+    const text = String(preview).trim();
+    if (!text) return null;
+    try {
+      const obj = JSON.parse(text);
+      if (obj && typeof obj === "object" && !Array.isArray(obj)) return obj;
+    } catch (_) {
+      // fall through
+    }
+    return null;
+  }
+
+  function isFilePathTool(name) {
+    const key = normalizeToolKey(name);
+    const identity = parseToolIdentity(name);
+    const actionKey = identity.action || identity.leaf || key;
+    return (
+      /^(read|write|edit|delete|get_file|write_file|delete_file|strreplace|search_replace|create_artifact)$/.test(actionKey) ||
+      /^(read|write|edit|delete|strreplace|search_replace)$/.test(key)
+    );
+  }
+
+  function unescapeJsonString(value) {
+    try {
+      return JSON.parse('"' + value + '"');
+    } catch (_) {
+      return String(value || "");
+    }
+  }
+
+  function extractToolFilePath(name, inputPreview) {
+    if (!isFilePathTool(name)) return "";
+    const obj = parseToolInput(inputPreview);
+    if (obj) {
+      const keys = ["path", "file", "target_notebook", "target", "entry", "name"];
+      for (let i = 0; i < keys.length; i += 1) {
+        const value = obj[keys[i]];
+        if (typeof value === "string" && value.trim()) return value.trim();
+      }
+    }
+    // Recover path from truncated JSON previews (common for write/edit payloads).
+    const text = String(inputPreview || "");
+    const match = text.match(/"(?:path|file|target_notebook|target|entry)"\s*:\s*"((?:\\.|[^"\\])*)"/);
+    if (match && match[1]) return unescapeJsonString(match[1]).trim();
+    const nameMatch = text.match(/"name"\s*:\s*"((?:\\.|[^"\\])*(?:\/|\\)(?:\\.|[^"\\])*)"/);
+    if (nameMatch && nameMatch[1]) return unescapeJsonString(nameMatch[1]).trim();
+    return "";
+  }
+
+  function formatToolFilePath(pathValue) {
+    let value = String(pathValue || "").trim();
+    if (!value) return "";
+    if (value.indexOf("file://") === 0) {
+      value = value.slice("file://".length);
+      if (/^\/[A-Za-z]:/.test(value)) value = value.slice(1);
+    }
+    const display = value.replace(/\\/g, "/");
+    const parts = display.split("/").filter(Boolean);
+    if (parts.length <= 3) return parts.join("/") || display;
+    return "…/" + parts.slice(-3).join("/");
+  }
+
+  function renderFileLink(pathValue) {
+    const full = String(pathValue || "").trim();
+    if (!full) return "";
+    const display = formatToolFilePath(full);
+    return (
+      '<button type="button" class="file-link" data-action="open-file" data-path="' +
+        escapeHtml(full) +
+        '" title="Open ' + escapeHtml(full) + '">' +
+        escapeHtml(display) +
+      "</button>"
+    );
+  }
+
+  function toolSummary(name, inputPreview) {
+    const obj = parseToolInput(inputPreview);
+    const key = normalizeToolKey(name);
+    const identity = parseToolIdentity(name);
+    const actionKey = identity.action || identity.leaf || key;
+    if (!obj) {
+      const one = String(inputPreview || "").replace(/\s+/g, " ").trim();
+      return one.length > 72 ? one.slice(0, 72) + "…" : one;
+    }
+    const pick = function () {
+      for (let i = 0; i < arguments.length; i += 1) {
+        const v = obj[arguments[i]];
+        if (typeof v === "string" && v.trim()) return v.trim();
+      }
+      return "";
+    };
+    let value = "";
+    if (key === "bash" || key === "shell" || actionKey === "bash" || actionKey === "shell") {
+      value = pick("command", "cmd");
+      if (/^\s*ls\b/.test(value)) return value;
+    } else if (actionKey === "grep" || key === "grep") {
+      value = pick("pattern", "query", "path");
+    } else if (actionKey === "glob" || key === "glob") {
+      value = pick("path", "glob_pattern", "pattern");
+    } else if (
+      /^(read|write|edit|delete|get_file|write_file|delete_file|strreplace|search_replace)$/.test(actionKey) ||
+      /^(read|write|edit|delete|strreplace|search_replace)$/.test(key)
+    ) {
+      value = pick("path", "file", "target_notebook", "target", "entry", "name");
+      if (value) value = formatToolFilePath(value);
+    } else if (/navigate|screenshot|snapshot|click|fill|type|scroll|wait/.test(actionKey)) {
+      value = pick("url", "uri", "selector", "ref", "text", "query", "i", "name", "path");
+    } else if (/artifact|project|run|file/.test(actionKey)) {
+      value = pick("entry", "path", "name", "project", "runId", "url", "i");
+      if (value) {
+        const parts = value.split(/[\\/]/);
+        if (parts.length > 2) value = parts.slice(-2).join("/");
+      }
+    } else {
+      value = pick("path", "url", "uri", "entry", "query", "pattern", "command", "name", "selector", "text", "i");
+    }
+    if (!value) {
+      try {
+        value = JSON.stringify(obj);
+      } catch (_) {
+        value = String(inputPreview || "");
+      }
+    }
+    value = value.replace(/\s+/g, " ").trim();
+    return value.length > 72 ? value.slice(0, 72) + "…" : value;
+  }
+
+  function statusBadge(status) {
+    const s = String(status || "done");
+    if (s === "done") {
+      return '<span class="badge done" title="Done">✓</span>';
+    }
+    if (s === "error") {
+      return '<span class="badge error" title="Error">!</span>';
+    }
+    return '<span class="badge running" title="Running"><span class="badge-dot"></span></span>';
+  }
+
+  function renderPart(part, msg, partIndex) {
     if (part.kind === "thinking") {
       if (state.showThinking === false) return "";
       const isLive =
         Boolean(msg && msg.streaming) &&
-        (part.streaming === true || (part.streaming !== false && hasTextPart(msg) === false));
-      const openAttr = isLive ? " open" : "";
+        (part.streaming === true || (part.streaming !== false && !part.endedAt && hasTextPart(msg) === false));
+      const collapseId = "thinking:" + (msg && msg.id ? msg.id : "msg") + ":" + String(partIndex || 0);
+      const openAttr = collapseOpenAttr(collapseId, isLive);
       const liveClass = isLive ? " live" : "";
       const streamClass = isLive ? " streaming" : "";
-      const label = isLive ? "Thinking…" : "Thinking";
-      const body = escapeHtml(part.text || (isLive ? "" : ""));
-      return `<details class="thinking${liveClass}"${openAttr}>
-        <summary>${label}</summary>
-        <pre class="thinking-body${streamClass}">${body}</pre>
-      </details>`;
+      const label = thinkingLabel(part, isLive);
+      const body = escapeHtml(part.text || "");
+      return (
+        '<details class="collapse thinking' + liveClass + '" data-collapse-id="' + escapeHtml(collapseId) + '"' + openAttr + '>' +
+          '<summary class="collapse-summary">' +
+            chevronIcon() +
+            '<span class="collapse-title">' + escapeHtml(label) + '</span>' +
+          '</summary>' +
+          '<div class="collapse-body">' +
+            '<pre class="thinking-body' + streamClass + '">' + body + '</pre>' +
+          '</div>' +
+        '</details>'
+      );
     }
     if (part.kind === "tool") {
-      const out = part.outputPreview
-        ? `<pre>${escapeHtml(part.outputPreview)}</pre>`
-        : part.inputPreview
-          ? `<pre>${escapeHtml(part.inputPreview)}</pre>`
-          : "";
-      return `<div class="tool">
-        <div class="tool-head">
-          <div class="tool-name">${escapeHtml(part.name)}</div>
-          <div class="badge ${escapeHtml(part.status)}">${escapeHtml(part.status)}</div>
-        </div>
-        ${out}
-      </div>`;
+      const running = part.status === "running";
+      const collapseId = "tool:" + String(part.id || part.name || "tool");
+      const openAttr = collapseOpenAttr(collapseId, running);
+      const liveClass = running ? " live" : "";
+      const title = toolTitle(part.name, part.inputPreview);
+      const filePath = extractToolFilePath(part.name, part.inputPreview);
+      const summary = filePath ? "" : toolSummary(part.name, part.inputPreview);
+      const summaryHtml = filePath
+        ? '<span class="collapse-meta">' + renderFileLink(filePath) + '</span>'
+        : (summary ? '<span class="collapse-meta">' + escapeHtml(summary) + '</span>' : "");
+      const sections = [];
+      if (part.inputPreview) {
+        sections.push(
+          '<div class="tool-section">' +
+            '<div class="tool-section-label">Input</div>' +
+            '<pre>' + escapeHtml(part.inputPreview) + '</pre>' +
+          '</div>'
+        );
+      }
+      if (part.outputPreview) {
+        sections.push(
+          '<div class="tool-section">' +
+            '<div class="tool-section-label">Output</div>' +
+            '<pre>' + escapeHtml(part.outputPreview) + '</pre>' +
+          '</div>'
+        );
+      }
+      const body = sections.length
+        ? '<div class="collapse-body tool-body">' + sections.join("") + '</div>'
+        : "";
+      return (
+        '<details class="collapse tool' + liveClass + '" data-collapse-id="' + escapeHtml(collapseId) + '"' + openAttr + '>' +
+          '<summary class="collapse-summary">' +
+            chevronIcon() +
+            '<span class="collapse-title">' + escapeHtml(title) + '</span>' +
+            summaryHtml +
+            statusBadge(part.status) +
+          '</summary>' +
+          body +
+        '</details>'
+      );
     }
-    return `<div class="bubble">${renderMarkdownish(part.text)}</div>`;
+    return '<div class="bubble">' + renderMarkdownish(part.text) + '</div>';
   }
 
   function renderMessageAttachments(attachments) {
@@ -176,7 +689,7 @@
           const cls = msg.streaming && idx === msg.parts.length - 1 ? " streaming" : "";
           return `<div class="bubble${cls}">${renderMarkdownish(part.text || (msg.streaming ? "" : ""))}</div>`;
         }
-        return renderPart(part, msg);
+        return renderPart(part, msg, idx);
       })
       .join("");
 
@@ -322,6 +835,13 @@
     );
   }
 
+  function ensureActiveTabVisible() {
+    if (!tabsEl) return;
+    const active = tabsEl.querySelector(".tab.active");
+    if (!active || typeof active.scrollIntoView !== "function") return;
+    active.scrollIntoView({ inline: "nearest", block: "nearest" });
+  }
+
   function renderTabs() {
     if (!tabsEl) return;
     const tabs = state.tabs || [];
@@ -354,6 +874,7 @@
         if (titleEl && titleEl.textContent !== tab.title) titleEl.textContent = tab.title;
       });
       tabsSignature = signature;
+      ensureActiveTabVisible();
       return;
     }
 
@@ -363,6 +884,7 @@
       })
       .join("");
     tabsSignature = signature;
+    ensureActiveTabVisible();
   }
 
   function render() {
@@ -388,26 +910,32 @@
           last.role === "assistant" &&
           last.streaming &&
           messagesEl.children.length === messages.length;
+        const prevScrollTop = messagesEl.scrollTop;
+        const prevScrollHeight = messagesEl.scrollHeight;
+        const shouldStick = stickToBottom || isNearBottom(messagesEl, 80);
 
         if (canPatch) {
           const thinkingPart = Array.prototype.slice.call(last.parts).reverse().find(function (p) { return p.kind === "thinking"; });
           const textPart = Array.prototype.slice.call(last.parts).reverse().find(function (p) { return p.kind === "text"; });
           const thinkingPre = existing.querySelector("pre.thinking-body");
-          const thinkingDetails = existing.querySelector("details.thinking");
+          const thinkingDetails = existing.querySelector("details.thinking, details.collapse.thinking");
           if (thinkingPart && thinkingPre && thinkingDetails) {
             thinkingPre.textContent = thinkingPart.text || "";
-            thinkingDetails.open = thinkingPart.streaming !== false && textPart == null;
-            thinkingDetails.classList.toggle("live", thinkingDetails.open);
-            const summary = thinkingDetails.querySelector("summary");
-            if (summary) summary.textContent = thinkingDetails.open ? "Thinking…" : "Thinking";
-            thinkingPre.classList.toggle("streaming", thinkingDetails.open);
+            // Keep the user's expand/collapse choice; only auto-open while live if not closed.
+            const live = thinkingPart.streaming !== false && textPart == null;
+            thinkingDetails.classList.toggle("live", live);
+            const summaryLabel = thinkingDetails.querySelector(".collapse-label, .thinking-label");
+            if (summaryLabel) {
+              summaryLabel.textContent = live ? "Thinking…" : (summaryLabel.textContent || "Thinking");
+            }
+            thinkingPre.classList.toggle("streaming", live);
           } else if (thinkingPart && thinkingPre == null) {
             existing.outerHTML = renderMessage(last);
           }
 
           const bubbles = existing.querySelectorAll(".bubble");
           const lastBubble = bubbles[bubbles.length - 1];
-          if (textPart && lastBubble && lastBubble.closest(".thinking") == null) {
+          if (textPart && lastBubble && lastBubble.closest(".thinking") == null && lastBubble.closest(".collapse") == null) {
             lastBubble.innerHTML = renderMarkdownish(textPart.text || "");
             lastBubble.classList.toggle("streaming", true);
           } else if (textPart && lastBubble == null) {
@@ -415,15 +943,23 @@
           }
         } else {
           messagesEl.innerHTML = messages.map(renderMessage).join("");
+          if (!shouldStick) {
+            // Preserve the user's reading position across full re-renders.
+            const delta = messagesEl.scrollHeight - prevScrollHeight;
+            messagesEl.scrollTop = Math.max(0, prevScrollTop + Math.max(0, delta));
+          }
         }
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+        if (shouldStick) {
+          stickToBottom = true;
+          scrollMessagesToBottom(true);
+        }
       } else {
         messagesEl.innerHTML = "";
       }
 
       renderAttachments();
     } catch (err) {
-      console.error("Oh My Pi Chat render failed", err);
+      console.error("OMP Chat render failed", err);
       if (statusDot) {
         statusDot.className = "status-dot error";
         statusDot.title = `UI error: ${err && err.message ? err.message : err}`;
@@ -579,6 +1115,7 @@
   function send() {
     const text = inputEl.value;
     if (text.trim() === "" && state.attachments.length === 0) return;
+    stickToBottom = true;
     if (text.trim()) {
       state.messages = state.messages.concat({
         id: `local-${Date.now()}`,
@@ -588,6 +1125,7 @@
       });
       state.status = { state: "busy", detail: "Sending…" };
       render();
+      scrollMessagesToBottom(true);
     }
     vscode.postMessage({ type: "send", text: text });
     inputEl.value = "";
@@ -652,6 +1190,12 @@
   }
 
   sendBtn.addEventListener("click", send);
+
+  if (messagesEl) {
+    messagesEl.addEventListener("scroll", function () {
+      stickToBottom = isNearBottom(messagesEl, 80);
+    }, { passive: true });
+  }
   stopBtn.addEventListener("click", function () { vscode.postMessage({ type: "stop" }); });
   if (newChatBtn) newChatBtn.addEventListener("click", function () { vscode.postMessage({ type: "newChat" }); });
   if (historyBtn) historyBtn.addEventListener("click", function () { vscode.postMessage({ type: "history" }); });
@@ -734,10 +1278,31 @@
   });
 
   messagesEl.addEventListener("click", function (e) {
+    const fileBtn = e.target.closest("button[data-action='open-file']");
+    if (fileBtn && messagesEl.contains(fileBtn)) {
+      e.preventDefault();
+      e.stopPropagation();
+      const filePath = fileBtn.getAttribute("data-path") || "";
+      if (filePath) vscode.postMessage({ type: "openFile", path: filePath });
+      return;
+    }
+
+    const link = e.target.closest("a[data-href], a[href]");
+    if (link && messagesEl.contains(link)) {
+      const href = link.getAttribute("data-href") || link.getAttribute("href") || "";
+      if (href) {
+        e.preventDefault();
+        vscode.postMessage({ type: "openExternal", url: href });
+        return;
+      }
+    }
+
     const btn = e.target.closest("button[data-action]");
     if (btn == null) return;
     const action = btn.getAttribute("data-action");
-    const pre = btn.parentElement && btn.parentElement.previousElementSibling;
+    const codeRoot = btn.closest(".md-code");
+    const pre = (codeRoot && codeRoot.querySelector(".md-pre")) ||
+      (btn.parentElement && btn.parentElement.previousElementSibling);
     const encoded = pre && pre.getAttribute && pre.getAttribute("data-code");
     const text = encoded ? decodeURIComponent(encoded) : "";
     if (action === "copy-code" && text) vscode.postMessage({ type: "copy", text: text });
@@ -795,6 +1360,17 @@
 
 
   if (tabsEl) {
+    // Vertical wheel / trackpad gestures scroll the tab strip horizontally.
+    tabsEl.addEventListener(
+      "wheel",
+      function (e) {
+        if (tabsEl.scrollWidth <= tabsEl.clientWidth) return;
+        if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+        e.preventDefault();
+        tabsEl.scrollLeft += e.deltaY;
+      },
+      { passive: false },
+    );
     // Switch on pointerdown so streaming re-renders cannot swallow the click.
     tabsEl.addEventListener("pointerdown", function (e) {
       if (e.button != null && e.button !== 0) return;
@@ -833,6 +1409,11 @@
     const msg = event.data;
     if (msg == null || msg.type == null) return;
     if (msg.type === "ready") {
+      const nextTabId = msg.activeTabId || "";
+      if (nextTabId !== activeTabIdForScroll) {
+        stickToBottom = true;
+        activeTabIdForScroll = nextTabId;
+      }
       state = {
         status: msg.status,
         messages: msg.messages || [],
@@ -843,7 +1424,7 @@
         displayName: msg.displayName || state.displayName,
         contextUsage: msg.contextUsage != null ? msg.contextUsage : state.contextUsage,
         tabs: msg.tabs || [],
-        activeTabId: msg.activeTabId || "",
+        activeTabId: nextTabId,
       };
       render();
       return;
@@ -876,7 +1457,12 @@
     }
     if (msg.type === "tabs") {
       state.tabs = msg.tabs || [];
-      state.activeTabId = msg.activeTabId || "";
+      const nextTabId = msg.activeTabId || state.activeTabId || "";
+      if (nextTabId !== activeTabIdForScroll) {
+        stickToBottom = true;
+        activeTabIdForScroll = nextTabId;
+      }
+      state.activeTabId = nextTabId;
       render();
       return;
     }

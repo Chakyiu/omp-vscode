@@ -20,6 +20,8 @@ export interface ThinkingPart {
   kind: "thinking";
   text: string;
   streaming?: boolean;
+  startedAt?: number;
+  endedAt?: number;
 }
 
 export type MessagePart = TextPart | ThinkingPart | ToolCallPart;
@@ -155,6 +157,7 @@ export type WebviewToHost =
   | { type: "copy"; text: string }
   | { type: "insert"; text: string }
   | { type: "openFile"; path: string }
+  | { type: "openExternal"; url: string }
   | { type: "searchFiles"; query: string; requestId: number }
   | { type: "runSlashCommand"; command: string };
 

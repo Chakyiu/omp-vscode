@@ -1,7 +1,7 @@
 {
   "name": "oh-my-pi-chat",
-  "displayName": "Oh My Pi Chat",
-  "description": "Copilot/Cursor-style chat sidebar for Oh My Pi (omp) in VS Code",
+  "displayName": "OMP Chat",
+  "description": "Copilot/Cursor-style chat sidebar for OMP (omp) in VS Code",
   "version": "0.1.0",
   "publisher": "local",
   "license": "MIT",
@@ -36,7 +36,7 @@
       "activitybar": [
         {
           "id": "ompChat",
-          "title": "Oh My Pi",
+          "title": "OMP",
           "icon": "media/icon.svg"
         }
       ]
@@ -53,49 +53,49 @@
     "commands": [
       {
         "command": "ompChat.open",
-        "title": "Oh My Pi: Open Chat",
+        "title": "OMP: Open Chat",
         "icon": "$(comment-discussion)"
       },
       {
         "command": "ompChat.newChat",
-        "title": "Oh My Pi: New Chat",
+        "title": "OMP: New Chat",
         "icon": "$(add)"
       },
       {
         "command": "ompChat.stop",
-        "title": "Oh My Pi: Stop Generation",
+        "title": "OMP: Stop Generation",
         "icon": "$(debug-stop)"
       },
       {
         "command": "ompChat.sendSelection",
-        "title": "Oh My Pi: Send Selection to Chat"
+        "title": "OMP: Send Selection to Chat"
       },
       {
         "command": "ompChat.attachCurrentFile",
-        "title": "Oh My Pi: Attach Current File"
+        "title": "OMP: Attach Current File"
       },
       {
         "command": "ompChat.restartSession",
-        "title": "Oh My Pi: Restart Session"
+        "title": "OMP: Restart Session"
       },
       {
         "command": "ompChat.attachFiles",
-        "title": "Oh My Pi: Attach Files",
+        "title": "OMP: Attach Files",
         "icon": "$(attach)"
       },
       {
         "command": "ompChat.attachFolder",
-        "title": "Oh My Pi: Attach Folder",
+        "title": "OMP: Attach Folder",
         "icon": "$(folder)"
       },
       {
         "command": "ompChat.attachMenu",
-        "title": "Oh My Pi: Attach…",
+        "title": "OMP: Attach…",
         "icon": "$(attach)"
       },
       {
         "command": "ompChat.attachExplorer",
-        "title": "Oh My Pi: Attach to Chat",
+        "title": "OMP: Attach to Chat",
         "icon": "$(attach)"
       }
     ],
@@ -141,7 +141,7 @@
       ]
     },
     "configuration": {
-      "title": "Oh My Pi Chat",
+      "title": "OMP Chat",
       "properties": {
         "ompChat.ompPath": {
           "type": "string",
@@ -188,7 +188,7 @@
         "ompChat.continueLastSession": {
           "type": "boolean",
           "default": true,
-          "description": "Restore the latest omp session when the chat bridge starts (survives VS Code restarts/kills). Disable to always start a blank session."
+          "description": "Restore all open omp chat tabs/sessions when the chat bridge starts (survives VS Code restarts/kills). Disable to always start a blank session."
         },
         "ompChat.extraArgs": {
           "type": "array",

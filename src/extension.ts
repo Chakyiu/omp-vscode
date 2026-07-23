@@ -1,25 +1,56 @@
 import * as vscode from "vscode";
 import { ChatViewProvider } from "./chat/chatViewProvider";
-import { TabManager } from "./omp/tabManager";
+import { TabManager, type OpenSessionsState } from "./omp/tabManager";
 
 function workspaceCwd(): string {
   const folder = vscode.workspace.workspaceFolders?.[0];
   return folder?.uri.fsPath ?? process.cwd();
 }
 
-const LAST_SESSION_KEY = "ompChat.lastSessionId";
+const OPEN_SESSIONS_KEY = "ompChat.openSessions";
+const LEGACY_LAST_SESSION_KEY = "ompChat.lastSessionId";
+
+function readOpenSessions(context: vscode.ExtensionContext): OpenSessionsState | undefined {
+  const saved = context.workspaceState.get<OpenSessionsState>(OPEN_SESSIONS_KEY);
+  const rawIds = saved?.sessionIds ?? [];
+  const sessionIds: string[] = [];
+  const titles: string[] = [];
+  for (let i = 0; i < rawIds.length; i += 1) {
+    const id = rawIds[i]?.trim();
+    if (!id) {
+      continue;
+    }
+    sessionIds.push(id);
+    titles.push(saved?.titles?.[i]?.trim() || "New chat");
+  }
+  if (sessionIds.length > 0) {
+    return {
+      sessionIds,
+      titles,
+      activeIndex: Math.min(Math.max(saved?.activeIndex ?? 0, 0), sessionIds.length - 1),
+    };
+  }
+
+  // Migrate the older single-session key so existing workspaces keep restoring.
+  const legacy = context.workspaceState.get<string>(LEGACY_LAST_SESSION_KEY);
+  if (legacy?.trim()) {
+    return { sessionIds: [legacy.trim()], titles: ["New chat"], activeIndex: 0 };
+  }
+  return undefined;
+}
 
 export function activate(context: vscode.ExtensionContext): void {
-  const sessionIdStore = {
-    get(): string | undefined {
-      const value = context.workspaceState.get<string>(LAST_SESSION_KEY);
-      return value && value.trim() ? value.trim() : undefined;
+  const openSessionsStore = {
+    get(): OpenSessionsState | undefined {
+      return readOpenSessions(context);
     },
-    set(id: string | undefined): void {
-      void context.workspaceState.update(LAST_SESSION_KEY, id && id.trim() ? id.trim() : undefined);
+    set(state: OpenSessionsState): void {
+      void context.workspaceState.update(OPEN_SESSIONS_KEY, state);
+      // Clear legacy key once the multi-session format is written.
+      void context.workspaceState.update(LEGACY_LAST_SESSION_KEY, undefined);
     },
   };
-  const sessions = new TabManager(workspaceCwd, sessionIdStore);
+  const sessions = new TabManager(workspaceCwd, openSessionsStore);
   const provider = new ChatViewProvider(
     context.extensionUri,
     sessions,

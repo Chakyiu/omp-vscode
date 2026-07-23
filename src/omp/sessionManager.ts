@@ -14,11 +14,58 @@ import type {
   ToolCallPart,
 } from "./types";
 
+function compactToolInput(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+  const obj = value as Record<string, unknown>;
+  const pathKeys = ["path", "file", "target_notebook", "target", "entry", "name"] as const;
+  const bulkyKeys = new Set([
+    "contents",
+    "content",
+    "new_string",
+    "old_string",
+    "text",
+    "code",
+    "prompt",
+    "message",
+  ]);
+  const hasPath = pathKeys.some((key) => typeof obj[key] === "string" && String(obj[key]).trim());
+  const hasBulky = Object.keys(obj).some(
+    (key) => bulkyKeys.has(key) && typeof obj[key] === "string" && String(obj[key]).length > 80,
+  );
+  if (!hasPath || !hasBulky) {
+    return value;
+  }
+  const slim: Record<string, unknown> = {};
+  for (const key of pathKeys) {
+    if (typeof obj[key] === "string" && String(obj[key]).trim()) {
+      slim[key] = obj[key];
+    }
+  }
+  for (const [key, raw] of Object.entries(obj)) {
+    if (key in slim) {
+      continue;
+    }
+    if (typeof raw === "string" && bulkyKeys.has(key)) {
+      slim[key] = raw.length > 80 ? `${raw.slice(0, 80)}…` : raw;
+      continue;
+    }
+    if (typeof raw === "string" && raw.length > 160) {
+      slim[key] = `${raw.slice(0, 160)}…`;
+      continue;
+    }
+    slim[key] = raw;
+  }
+  return slim;
+}
+
 function preview(value: unknown, max = 400): string | undefined {
   if (value == null) {
     return undefined;
   }
-  const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  const compact = compactToolInput(value);
+  const text = typeof compact === "string" ? compact : JSON.stringify(compact, null, 2);
   if (!text) {
     return undefined;
   }
@@ -360,6 +407,24 @@ export class SessionManager {
     }));
   }
 
+  private closeOpenThinking(parts: MessagePart[]): void {
+    for (let i = parts.length - 1; i >= 0; i -= 1) {
+      const part = parts[i];
+      if (part.kind !== "thinking") {
+        continue;
+      }
+      if (part.streaming === false && part.endedAt) {
+        break;
+      }
+      parts[i] = {
+        ...part,
+        streaming: false,
+        endedAt: part.endedAt ?? Date.now(),
+      };
+      break;
+    }
+  }
+
   private appendText(kind: "text" | "thinking", delta: string): void {
     // Allow empty thinking_start so the UI can show a live thinking block immediately.
     if (!delta && kind !== "thinking") {
@@ -371,10 +436,31 @@ export class SessionManager {
         if (!delta) {
           return parts;
         }
-        parts[parts.length - 1] = { ...last, text: last.text + delta };
+        if (last.kind === "thinking") {
+          parts[parts.length - 1] = {
+            ...last,
+            text: last.text + delta,
+            streaming: true,
+            startedAt: last.startedAt ?? Date.now(),
+          };
+        } else {
+          parts[parts.length - 1] = { ...last, text: last.text + delta };
+        }
         return parts;
       }
-      parts.push({ kind, text: delta || "" });
+      if (kind !== "thinking") {
+        this.closeOpenThinking(parts);
+      }
+      if (kind === "thinking") {
+        parts.push({
+          kind: "thinking",
+          text: delta || "",
+          streaming: true,
+          startedAt: Date.now(),
+        });
+      } else {
+        parts.push({ kind: "text", text: delta || "" });
+      }
       return parts;
     });
   }
@@ -394,6 +480,7 @@ export class SessionManager {
         };
         return parts;
       }
+      this.closeOpenThinking(parts);
       parts.push({
         kind: "tool",
         id: partial.id,
@@ -429,7 +516,7 @@ export class SessionManager {
           id,
           name,
           status: "running",
-          inputPreview: preview(event.args ?? event.input),
+          inputPreview: preview(event.args ?? event.input, 800),
         });
         break;
       }
@@ -461,10 +548,26 @@ export class SessionManager {
       case "turn_end":
       case "agent_end":
         if (this.currentAssistantId) {
-          this.patchMessage(this.currentAssistantId, (msg) => ({
-            ...msg,
-            streaming: false,
-          }));
+          this.patchMessage(this.currentAssistantId, (msg) => {
+            const parts = msg.parts.map((part) => {
+              if (part.kind !== "thinking") {
+                return part;
+              }
+              if (part.streaming === false && part.endedAt) {
+                return part;
+              }
+              return {
+                ...part,
+                streaming: false,
+                endedAt: part.endedAt ?? Date.now(),
+              };
+            });
+            return {
+              ...msg,
+              streaming: false,
+              parts,
+            };
+          });
         }
         this.currentAssistantId = undefined;
         this.setStatus({ state: "ready", detail: "Ready" });
@@ -512,7 +615,7 @@ export class SessionManager {
           id,
           name,
           status: "running",
-          inputPreview: preview(ev.args ?? ev.input),
+          inputPreview: preview(ev.args ?? ev.input, 800),
         });
         break;
       }

@@ -7,7 +7,8 @@ It launches a local `omp --mode rpc` session and streams replies, thinking, and 
 ## Features
 
 - Multi-tab chats (each tab is its own `omp` session)
-- Restores the latest omp session after VS Code restarts or force-quits
+- Restores all open omp chat tabs/sessions after VS Code restarts or force-quits
+- History button lists all past omp sessions for the workspace and can resume any of them
 
 - Model picker button (lists `omp models --json`, restarts session on change)
 - Per-session context usage meter from omp `get_state.contextUsage`
@@ -38,11 +39,11 @@ Then press **F5** (`Run Extension`) to open an Extension Development Host.
 
 ## Use
 
-1. Open the **Oh My Pi** icon in the Activity Bar
+1. Open the **OMP** icon in the Activity Bar
 2. Type a prompt and press **Enter**
 3. Optional:
-   - Right-click in the editor → **Oh My Pi: Attach Current File**
-   - Select code → **Oh My Pi: Send Selection to Chat**
+   - Right-click in the editor → **OMP: Attach Current File**
+   - Select code → **OMP: Send Selection to Chat**
 4. Use the view title buttons for **New Chat**, **Stop**, or **Restart Session**
 
 ### Keyboard shortcuts
@@ -61,7 +62,7 @@ Then press **F5** (`Run Extension`) to open an Extension Development Host.
 | `ompChat.thinking` | Thinking level |
 | `ompChat.approvalMode` | `always-ask` / `write` / `yolo` |
 | `ompChat.autoApprove` | Pass `--auto-approve` |
-| `ompChat.continueLastSession` | Restore latest omp session on start (default on; survives VS Code kills) |
+| `ompChat.continueLastSession` | Restore all open omp chat tabs/sessions on start (default on; survives VS Code kills) |
 | `ompChat.extraArgs` | Extra CLI args |
 | `ompChat.showThinking` | Show/hide thinking blocks in UI |
 
@@ -103,7 +104,7 @@ code --install-extension oh-my-pi-chat-0.1.0.vsix
 ## Notes / roadmap
 
 - Approval prompts from omp are not yet rendered as interactive UI cards (use `approvalMode` / `autoApprove` for now)
-- Multi-workspace root picker, session history browser, and inline apply/diff are natural next steps
+- Multi-workspace root picker and inline apply/diff are natural next steps
 - ACP (`omp acp`) is an alternative transport; this extension uses native `--mode rpc` for richer streaming events
 
 
@@ -113,6 +114,6 @@ code --install-extension oh-my-pi-chat-0.1.0.vsix
 - Type `@` in the composer to attach a file or entire folder
 - Paste an image from the clipboard into the input
 - Drag & drop files onto the chat panel
-- Right-click in Explorer → **Oh My Pi: Attach to Chat**
+- Right-click in Explorer → **OMP: Attach to Chat**
 
 Attachments are sent to `omp` as `@/absolute/path` mentions (images/files/folders), except code selections which are inlined.

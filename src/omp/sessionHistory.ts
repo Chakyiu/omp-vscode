@@ -1,11 +1,58 @@
 import { randomUUID } from "crypto";
 import type { ChatMessage, MessagePart, ToolCallPart } from "./types";
 
+function compactToolInput(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+  const obj = value as Record<string, unknown>;
+  const pathKeys = ["path", "file", "target_notebook", "target", "entry", "name"] as const;
+  const bulkyKeys = new Set([
+    "contents",
+    "content",
+    "new_string",
+    "old_string",
+    "text",
+    "code",
+    "prompt",
+    "message",
+  ]);
+  const hasPath = pathKeys.some((key) => typeof obj[key] === "string" && String(obj[key]).trim());
+  const hasBulky = Object.keys(obj).some(
+    (key) => bulkyKeys.has(key) && typeof obj[key] === "string" && String(obj[key]).length > 80,
+  );
+  if (!hasPath || !hasBulky) {
+    return value;
+  }
+  const slim: Record<string, unknown> = {};
+  for (const key of pathKeys) {
+    if (typeof obj[key] === "string" && String(obj[key]).trim()) {
+      slim[key] = obj[key];
+    }
+  }
+  for (const [key, raw] of Object.entries(obj)) {
+    if (key in slim) {
+      continue;
+    }
+    if (typeof raw === "string" && bulkyKeys.has(key)) {
+      slim[key] = raw.length > 80 ? `${raw.slice(0, 80)}…` : raw;
+      continue;
+    }
+    if (typeof raw === "string" && raw.length > 160) {
+      slim[key] = `${raw.slice(0, 160)}…`;
+      continue;
+    }
+    slim[key] = raw;
+  }
+  return slim;
+}
+
 function preview(value: unknown, max = 400): string | undefined {
   if (value == null) {
     return undefined;
   }
-  const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+  const compact = compactToolInput(value);
+  const text = typeof compact === "string" ? compact : JSON.stringify(compact, null, 2);
   if (!text) {
     return undefined;
   }
@@ -118,7 +165,7 @@ export function chatMessagesFromOmp(rawMessages: unknown[]): ChatMessage[] {
             id,
             name: String(p.name ?? p.toolName ?? "tool"),
             status: "done",
-            inputPreview: preview(p.arguments ?? p.args ?? p.input),
+            inputPreview: preview(p.arguments ?? p.args ?? p.input, 800),
           };
           toolIndex.set(id, { messageIndex, partIndex: parts.length });
           parts.push(tool);

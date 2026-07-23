@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { AttachmentService } from "../omp/attachmentService";
 import { pickMode, pickModel } from "../omp/modelCatalog";
+import { formatSessionWhen, listOmpSessions } from "../omp/sessionCatalog";
 import type { TabManager } from "../omp/tabManager";
 import type { FileSuggestItem, HostToWebview, WebviewToHost } from "../omp/types";
 
@@ -217,6 +218,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
         break;
       }
+      case "openExternal": {
+        const raw = String(msg.url || "").trim();
+        if (!raw) break;
+        try {
+          if (/^[A-Za-z]:\\/.test(raw) || raw.startsWith("/") || raw.startsWith("./") || raw.startsWith("../")) {
+            const uri = vscode.Uri.file(raw);
+            await vscode.commands.executeCommand("vscode.open", uri);
+          } else {
+            await vscode.env.openExternal(vscode.Uri.parse(raw));
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          vscode.window.showWarningMessage(`Could not open link: ${message}`);
+        }
+        break;
+      }
       case "searchFiles":
         await this.searchFiles(msg.query || "", msg.requestId);
         break;
@@ -308,7 +325,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src ${webview.cspSource}; img-src ${webview.cspSource} data: blob:;" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="stylesheet" href="${styleUri}" />
-  <title>Oh My Pi Chat</title>
+  <title>OMP Chat</title>
 </head>
 <body>
   <div id="app">
@@ -322,8 +339,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         <span id="statusDot" class="status-dot" title="status"></span>
         <button id="newChatBtn" class="icon-btn tab-action" title="New session" aria-label="New session">
           <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <path fill="currentColor" d="M3.5 1.75A1.75 1.75 0 0 1 5.25 0h5.09c.46 0 .9.18 1.23.51l2.92 2.92c.33.33.51.77.51 1.23v9.59A1.75 1.75 0 0 1 13.25 16h-8A1.75 1.75 0 0 1 3.5 14.25V1.75Zm1.5 0v12.5c0 .172.16.0.3.25h8a.25.25 0 0 0 .25-.25V5H9.75A1.75 1.75 0 0 1 8 3.25V1.5H5.25a.25.25 0 0 0-.25.25Zm6.19.31L9.5 1.31v1.94c0 .172.16.0.3.25h1.94Z"/>
-            <path fill="currentColor" d="M8 7.25a.75.75 0 0 1 .75.75v1.25H10a.75.75 0 0 1 0 1.5H8.75V12a.75.75 0 0 1-1.5 0v-1.25H6a.75.75 0 0 1 0-1.5h1.25V8A.75.75 0 0 1 8 7.25Z"/>
+            <path fill="currentColor" d="M8.75 1.75a.75.75 0 0 0-1.5 0v5.5h-5.5a.75.75 0 0 0 0 1.5h5.5v5.5a.75.75 0 0 0 1.5 0v-5.5h5.5a.75.75 0 0 0 0-1.5h-5.5v-5.5Z"/>
           </svg>
         </button>
         <button id="moreBtn" class="icon-btn tab-action" title="Settings" aria-label="Settings">
@@ -460,31 +476,75 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
 
   private async showTabPicker(): Promise<void> {
-    const tabs = this.sessions.getTabs();
-    const activeId = this.sessions.getActiveId();
-    const items = [
-      ...tabs.map((tab) => ({
-        label: `${tab.id === activeId ? "• " : ""}${tab.title}`,
-        description: tab.busy ? "running" : tab.status,
-        detail: tab.id,
-      })),
+    const cwd = this.sessions.getWorkspaceCwdPath();
+    const openIds = this.sessions.getOpenOmpSessionIds();
+    const activeTabId = this.sessions.getActiveId();
+
+    let history: Awaited<ReturnType<typeof listOmpSessions>> = [];
+    try {
+      history = await listOmpSessions(cwd);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      vscode.window.showWarningMessage(`Could not load session history: ${message}`);
+    }
+
+    let activeOmpSessionId: string | undefined;
+    for (const sessionId of openIds) {
+      const tabId = this.sessions.findTabIdBySessionId(sessionId);
+      if (tabId === activeTabId) {
+        activeOmpSessionId = sessionId;
+        break;
+      }
+    }
+
+    type HistoryPick = vscode.QuickPickItem & {
+      action: "new" | "open";
+      sessionId?: string;
+      title?: string;
+    };
+
+    const items: HistoryPick[] = [
       {
         label: "+ New chat",
-        description: "Open another tab",
-        detail: "__new__",
+        description: "Start a fresh session",
+        action: "new",
       },
+      ...history.map((session) => {
+        const isOpen = openIds.has(session.id);
+        const isActive = session.id === activeOmpSessionId;
+        const when = formatSessionWhen(session.updatedAt);
+        const icon = isActive
+          ? "$(check)"
+          : isOpen
+            ? "$(comment-discussion)"
+            : "$(history)";
+        return {
+          label: `${icon} ${session.title}`,
+          description: [isOpen ? "open" : undefined, when].filter(Boolean).join(" · "),
+          detail:
+            session.preview && session.preview !== session.title ? session.preview : session.id,
+          action: "open" as const,
+          sessionId: session.id,
+          title: session.title,
+        };
+      }),
     ];
+
     const picked = await vscode.window.showQuickPick(items, {
-      title: "Chat tabs",
-      placeHolder: "Switch chat tab",
+      title: "Session history",
+      placeHolder: history.length
+        ? "Resume a past session or start a new chat"
+        : "No past sessions found — start a new chat",
+      matchOnDescription: true,
+      matchOnDetail: true,
     });
     if (!picked) {
       return;
     }
-    if (picked.detail === "__new__") {
+    if (picked.action === "new") {
       await this.sessions.newChat();
-    } else if (picked.detail) {
-      await this.sessions.switchTab(picked.detail);
+    } else if (picked.sessionId) {
+      await this.sessions.openHistorySession(picked.sessionId, picked.title);
     }
     this.postState();
   }
@@ -502,7 +562,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         { label: "Attach current file" },
         { label: "Attach selection" },
       ],
-      { title: "Oh My Pi" },
+      { title: "OMP" },
     );
     if (!picked) {
       return;
