@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { AttachmentService } from "../omp/attachmentService";
 import { pickMode, pickModel } from "../omp/modelCatalog";
 import type { TabManager } from "../omp/tabManager";
-import type { HostToWebview, WebviewToHost } from "../omp/types";
+import type { FileSuggestItem, HostToWebview, WebviewToHost } from "../omp/types";
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = "ompChat.sidebar";
@@ -217,6 +217,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
         break;
       }
+      case "searchFiles":
+        await this.searchFiles(msg.query || "", msg.requestId);
+        break;
+      case "runSlashCommand":
+        await this.runSlashCommand(msg.command);
+        break;
       case "openFile": {
         const uri = this.resolveWorkspaceUri(msg.path);
         if (!uri) {
@@ -310,28 +316,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       <div class="drop-card">Drop to attach</div>
     </div>
 
-    <header class="topbar">
-      <div class="brand">
-        <button id="modeTopBtn" class="mode-btn" title="Mode">
-          <span id="modeTopLabel">Agent</span>
-          <span class="chev">▾</span>
-        </button>
-        <span id="statusDot" class="status-dot" title="status"></span>
-      </div>
-      <div class="top-actions">
-        <button id="historyBtn" class="icon-btn" title="History">☰</button>
-        <button id="moreBtn" class="icon-btn" title="More">⋯</button>
-        <button id="newChatBtn" class="icon-btn" title="New chat">＋</button>
-      </div>
-    </header>
-
     <div class="tabstrip" id="tabstrip" aria-label="Chat tabs">
       <div class="tabs" id="tabs"></div>
-      <button id="addTabBtn" class="icon-btn tab-add" title="New tab" aria-label="New tab">
-        <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <path fill="currentColor" d="M8 2a.75.75 0 0 1 .75.75v4.5h4.5a.75.75 0 0 1 0 1.5h-4.5v4.5a.75.75 0 0 1-1.5 0v-4.5h-4.5a.75.75 0 0 1 0-1.5h4.5v-4.5A.75.75 0 0 1 8 2z"/>
-        </svg>
-      </button>
+      <div class="tab-actions">
+        <span id="statusDot" class="status-dot" title="status"></span>
+        <button id="newChatBtn" class="icon-btn tab-action" title="New session" aria-label="New session">
+          <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path fill="currentColor" d="M3.5 1.75A1.75 1.75 0 0 1 5.25 0h5.09c.46 0 .9.18 1.23.51l2.92 2.92c.33.33.51.77.51 1.23v9.59A1.75 1.75 0 0 1 13.25 16h-8A1.75 1.75 0 0 1 3.5 14.25V1.75Zm1.5 0v12.5c0 .172.16.0.3.25h8a.25.25 0 0 0 .25-.25V5H9.75A1.75 1.75 0 0 1 8 3.25V1.5H5.25a.25.25 0 0 0-.25.25Zm6.19.31L9.5 1.31v1.94c0 .172.16.0.3.25h1.94Z"/>
+            <path fill="currentColor" d="M8 7.25a.75.75 0 0 1 .75.75v1.25H10a.75.75 0 0 1 0 1.5H8.75V12a.75.75 0 0 1-1.5 0v-1.25H6a.75.75 0 0 1 0-1.5h1.25V8A.75.75 0 0 1 8 7.25Z"/>
+          </svg>
+        </button>
+        <button id="moreBtn" class="icon-btn tab-action" title="Settings" aria-label="Settings">
+          <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path fill="currentColor" d="M6.5 1.1a1.5 1.5 0 0 1 3 0l.08.46a1.5 1.5 0 0 0 2.1 1.08l.42-.2a1.5 1.5 0 0 1 2.04 1.95l-.25.4a1.5 1.5 0 0 0 .56 2.1l.43.2a1.5 1.5 0 0 1 0 2.72l-.43.2a1.5 1.5 0 0 0-.56 2.1l.25.4a1.5 1.5 0 0 1-2.04 1.95l-.42-.2a1.5 1.5 0 0 0-2.1 1.08L9.5 14.9a1.5 1.5 0 0 1-3 0l-.08-.46a1.5 1.5 0 0 0-2.1-1.08l-.42.2a1.5 1.5 0 0 1-2.04-1.95l.25-.4a1.5 1.5 0 0 0-.56-2.1l-.43-.2a1.5 1.5 0 0 1 0-2.72l.43-.2a1.5 1.5 0 0 0 .56-2.1l-.25-.4A1.5 1.5 0 0 1 4.3 2.44l.42.2a1.5 1.5 0 0 0 2.1-1.08L6.5 1.1ZM8 5.5A2.5 2.5 0 1 0 8 10.5 2.5 2.5 0 0 0 8 5.5Z"/>
+          </svg>
+        </button>
+        <button id="historyBtn" class="icon-btn tab-action" title="History" aria-label="History">
+          <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path fill="currentColor" d="M1.5 8a6.5 6.5 0 1 1 1.61 4.263.75.75 0 1 1 1.025-1.096A5 5 0 1 0 3 8H1.75A.75.75 0 0 1 1.5 8Z"/>
+            <path fill="currentColor" d="M8.75 4.75a.75.75 0 0 0-1.5 0v3.5c0 .192.168.1.5.53l2.5 1.5a.75.75 0 1 0 .75-1.3L8.75 7.8V4.75Z"/>
+            <path fill="currentColor" d="M4.28 1.22a.75.75 0 0 1 0 1.06L2.81 3.75H5.5a.75.75 0 0 1 0 1.5H1.75a.75.75 0 0 1-.75-.75V1.75a.75.75 0 0 1 1.5 0v1.69l1.72-1.72a.75.75 0 0 1 1.06 0Z"/>
+          </svg>
+        </button>
+      </div>
     </div>
 
     <main id="messages" class="messages"></main>
@@ -370,6 +377,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     <footer class="composer-wrap">
       <div class="composer">
+        <div id="suggest" class="suggest" hidden>
+          <div id="suggestHeader" class="suggest-header"></div>
+          <div id="suggestList" class="suggest-list" role="listbox"></div>
+        </div>
         <div id="attachments" class="attachments"></div>
         <textarea id="input" rows="2" placeholder="Plan, @ for context, / for commands"></textarea>
         <div class="composer-actions">
@@ -391,10 +402,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             </button>
           </div>
           <div class="right-actions">
-            <button id="attachBtn" class="icon-btn composer-icon" title="Attach">＋</button>
+            <button id="attachBtn" class="icon-btn composer-icon" title="Attach" aria-label="Attach">
+              <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path fill="currentColor" d="M13.56 3.56a2.25 2.25 0 0 0-3.18 0L3.66 10.28a3.25 3.25 0 0 0 4.6 4.6l5.65-5.66-.71-.7-5.65 5.65a2.25 2.25 0 1 1-3.18-3.18l6.72-6.72a1.25 1.25 0 1 1 1.77 1.77L6.86 12.04l-.71-.7 6.36-6.37a2.25 2.25 0 0 0 0-3.18z"/>
+              </svg>
+            </button>
             <button id="attachFilesBtn" class="ghost" title="Attach files">Files</button>
             <button id="attachFolderBtn" class="ghost" title="Attach folder">Folder</button>
-            <button id="imageBtn" class="icon-btn composer-icon" title="Attach image">🖼</button>
             <button id="stopBtn" class="secondary" title="Stop" hidden>■</button>
             <button id="sendBtn" class="primary" title="Send">↑</button>
           </div>
@@ -506,9 +520,226 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+
+  private async searchFiles(query: string, requestId: number): Promise<void> {
+    const files = await this.collectFileSuggestions(query);
+    this.post({ type: "fileResults", requestId, files });
+  }
+
+  private async collectFileSuggestions(query: string): Promise<FileSuggestItem[]> {
+    const q = query.trim().toLowerCase();
+    const results: FileSuggestItem[] = [];
+    const seen = new Set<string>();
+    const ignoreDirs = new Set([
+      "node_modules",
+      ".git",
+      "dist",
+      "out",
+      "build",
+      ".venv",
+      "coverage",
+      ".next",
+      "target",
+    ]);
+
+    const push = (item: FileSuggestItem): void => {
+      if (!item.fsPath || seen.has(item.fsPath)) {
+        return;
+      }
+      const hay = `${item.path} ${item.label || ""}`.toLowerCase();
+      if (q && !hay.includes(q) && !scorePath(item.path, q)) {
+        return;
+      }
+      seen.add(item.fsPath);
+      results.push(item);
+    };
+
+    const pushFolder = (relPath: string, fsPath: string, detail = "Folder"): void => {
+      const normalized = relPath.replace(/\\/g, "/").replace(/\/+$/, "");
+      if (!normalized || normalized === ".") {
+        return;
+      }
+      const parts = normalized.split("/");
+      if (parts.some((part) => ignoreDirs.has(part))) {
+        return;
+      }
+      push({
+        path: normalized,
+        fsPath,
+        kind: "folder",
+        label: `${normalized}/`,
+        detail,
+      });
+    };
+
+    const active = vscode.window.activeTextEditor?.document;
+    if (active && !active.isUntitled && active.uri.scheme === "file") {
+      push({
+        path: vscode.workspace.asRelativePath(active.uri, false),
+        fsPath: active.uri.fsPath,
+        kind: "file",
+        label: "Current file",
+        detail: vscode.workspace.asRelativePath(active.uri, false),
+      });
+    }
+
+    for (const doc of vscode.workspace.textDocuments) {
+      if (doc.isUntitled || doc.uri.scheme !== "file") continue;
+      push({
+        path: vscode.workspace.asRelativePath(doc.uri, false),
+        fsPath: doc.uri.fsPath,
+        kind: "file",
+        detail: "Open editor",
+      });
+    }
+
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    for (const folder of folders) {
+      // Top-level workspace roots are always attachable as folders.
+      pushFolder(folder.name, folder.uri.fsPath, "Workspace folder");
+    }
+
+    try {
+      const uris = await vscode.workspace.findFiles(
+        "**/*",
+        "**/{node_modules,.git,dist,out,build,.venv,coverage,.next,target}/**",
+        400,
+      );
+      for (const uri of uris) {
+        const rel = vscode.workspace.asRelativePath(uri, false);
+        push({
+          path: rel,
+          fsPath: uri.fsPath,
+          kind: "file",
+        });
+
+        // Derive ancestor folders from each file so @ can select entire directories.
+        let parent = vscode.Uri.joinPath(uri, "..");
+        for (let depth = 0; depth < 8; depth += 1) {
+          const parentFs = parent.fsPath;
+          const root = folders.find(
+            (folder) =>
+              parentFs === folder.uri.fsPath ||
+              parentFs.startsWith(folder.uri.fsPath + "/") ||
+              parentFs.startsWith(folder.uri.fsPath + "\\"),
+          );
+          if (!root) {
+            break;
+          }
+          if (parentFs === root.uri.fsPath) {
+            pushFolder(root.name, root.uri.fsPath, "Workspace folder");
+            break;
+          }
+          const parentRel = vscode.workspace.asRelativePath(parent, false);
+          if (!parentRel || parentRel === rel) {
+            break;
+          }
+          pushFolder(parentRel, parentFs);
+          parent = vscode.Uri.joinPath(parent, "..");
+        }
+      }
+    } catch {
+      // ignore findFiles failures (e.g. no workspace)
+    }
+
+    results.sort((a, b) => {
+      const boost = (item: FileSuggestItem): number => {
+        if (item.label === "Current file") return 1000;
+        if (item.detail === "Open editor") return 500;
+        if (item.kind === "folder") {
+          const base = item.path.split(/[\\/]/).pop() || item.path;
+          if (q && base.toLowerCase() === q) return 280;
+          if (q && base.toLowerCase().startsWith(q)) return 180;
+          return 40;
+        }
+        return 0;
+      };
+      const sa = scorePath(a.path, q) + boost(a);
+      const sb = scorePath(b.path, q) + boost(b);
+      if (sb !== sa) return sb - sa;
+      if (a.kind !== b.kind) return a.kind === "folder" ? -1 : 1;
+      return a.path.localeCompare(b.path);
+    });
+
+    return results.slice(0, 25);
+  }
+
+  private async runSlashCommand(command: string): Promise<void> {
+    const id = (command || "").trim().replace(/^\//, "").toLowerCase();
+    switch (id) {
+      case "new":
+      case "clear":
+        await this.newChat();
+        break;
+      case "stop":
+        this.stop();
+        break;
+      case "restart":
+        await this.restart();
+        break;
+      case "model":
+        await this.pickModelAndApply();
+        break;
+      case "mode":
+        await this.pickModeAndApply();
+        break;
+      case "attach":
+      case "files":
+        await this.attachFiles();
+        break;
+      case "folder":
+        await this.attachFolder();
+        break;
+      case "usage":
+        {
+          const usage = this.sessions.getContextUsage();
+          const model = this.currentModelLabel();
+          if (!usage) {
+            vscode.window.showInformationMessage(`Model: ${model}\nContext usage: unavailable yet`);
+          } else {
+            vscode.window.showInformationMessage(
+              `Model: ${model}\nContext: ${usage.tokens.toLocaleString()} / ${usage.contextWindow.toLocaleString()} tokens (${usage.percent.toFixed(2)}%)`,
+            );
+          }
+        }
+        break;
+      case "history":
+      case "tabs":
+        await this.showTabPicker();
+        break;
+      case "help":
+        vscode.window.showInformationMessage(
+          "Commands: /new /stop /restart /model /mode /attach /folder /usage /history /help — Files/folders: type @ to attach",
+        );
+        break;
+      default:
+        vscode.window.showWarningMessage(`Unknown command: /${id}`);
+        break;
+    }
+  }
+
   dispose(): void {
     for (const d of this.disposables) {
       d.dispose();
     }
   }
 }
+
+function scorePath(pathValue: string, query: string): number {
+  if (!query) {
+    return 1;
+  }
+  const lower = pathValue.toLowerCase();
+  const base = lower.split(/[\\/]/).pop() || lower;
+  if (base === query) return 300;
+  if (base.startsWith(query)) return 200;
+  if (base.includes(query)) return 120;
+  if (lower.includes(query)) return 60;
+  // subsequence match
+  let qi = 0;
+  for (let i = 0; i < lower.length && qi < query.length; i += 1) {
+    if (lower[i] === query[qi]) qi += 1;
+  }
+  return qi === query.length ? 20 : 0;
+}
+

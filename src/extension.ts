@@ -7,8 +7,19 @@ function workspaceCwd(): string {
   return folder?.uri.fsPath ?? process.cwd();
 }
 
+const LAST_SESSION_KEY = "ompChat.lastSessionId";
+
 export function activate(context: vscode.ExtensionContext): void {
-  const sessions = new TabManager(workspaceCwd);
+  const sessionIdStore = {
+    get(): string | undefined {
+      const value = context.workspaceState.get<string>(LAST_SESSION_KEY);
+      return value && value.trim() ? value.trim() : undefined;
+    },
+    set(id: string | undefined): void {
+      void context.workspaceState.update(LAST_SESSION_KEY, id && id.trim() ? id.trim() : undefined);
+    },
+  };
+  const sessions = new TabManager(workspaceCwd, sessionIdStore);
   const provider = new ChatViewProvider(
     context.extensionUri,
     sessions,

@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { randomUUID } from "crypto";
 import { OmpRpcClient } from "./rpcClient";
+import { chatMessagesFromOmp } from "./sessionHistory";
 import type {
   Attachment,
   ChatMessage,
@@ -24,6 +25,11 @@ function preview(value: unknown, max = 400): string | undefined {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
+export interface SessionIdStore {
+  get(): string | undefined;
+  set(id: string | undefined): void;
+}
+
 export class SessionManager {
   private client: OmpRpcClient | undefined;
   private status: SessionStatus = { state: "stopped" };
@@ -32,10 +38,15 @@ export class SessionManager {
   private currentAssistantId: string | undefined;
   private contextUsage: ContextUsage | null = null;
   private sessionModel: SessionModelInfo | null = null;
+  private sessionId: string | undefined;
+  private restoringHistory = false;
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChange = this._onDidChange.event;
 
-  constructor(private readonly getWorkspaceCwd: () => string) {}
+  constructor(
+    private readonly getWorkspaceCwd: () => string,
+    private readonly sessionIdStore?: SessionIdStore,
+  ) {}
 
   getStatus(): SessionStatus {
     return this.status;
@@ -92,11 +103,26 @@ export class SessionManager {
     };
   }
 
-  async ensureStarted(): Promise<void> {
+  async ensureStarted(options?: Partial<OmpClientOptions>): Promise<void> {
     if (this.client?.isRunning && this.client.isReady) {
       return;
     }
-    await this.start();
+    await this.start(options ?? this.defaultStartOptions());
+  }
+
+  private defaultStartOptions(): Partial<OmpClientOptions> {
+    const continueEnabled = vscode.workspace
+      .getConfiguration("ompChat")
+      .get<boolean>("continueLastSession", true);
+    if (!continueEnabled) {
+      return { continueLastSession: false, resumeSessionId: undefined };
+    }
+    const saved = this.sessionId ?? this.sessionIdStore?.get();
+    if (saved) {
+      // Prefer exact resume so a VS Code kill still restores the same session.
+      return { resumeSessionId: saved, continueLastSession: false };
+    }
+    return { continueLastSession: true };
   }
 
   async start(overrides?: Partial<OmpClientOptions>): Promise<void> {
@@ -109,7 +135,7 @@ export class SessionManager {
 
     client.on("ready", () => {
       this.setStatus({ state: "ready", detail: "Connected to omp" });
-      void this.refreshSessionState();
+      void this.onSessionReady(options);
     });
 
     client.on("error", (err) => {
@@ -147,7 +173,12 @@ export class SessionManager {
   }
 
   async restart(): Promise<void> {
-    await this.start();
+    const resumeId = this.sessionId ?? this.sessionIdStore?.get();
+    if (resumeId) {
+      await this.start({ resumeSessionId: resumeId, continueLastSession: false });
+      return;
+    }
+    await this.start(this.defaultStartOptions());
   }
 
   async newChat(): Promise<void> {
@@ -159,9 +190,10 @@ export class SessionManager {
     this.attachments = [];
     this.contextUsage = null;
     this.sessionModel = null;
+    this.sessionId = undefined;
     this.notify();
     // Always start a fresh session for New Chat.
-    await this.start({ continueLastSession: false });
+    await this.start({ continueLastSession: false, resumeSessionId: undefined });
   }
 
   addAttachment(attachment: Omit<Attachment, "id"> & { id?: string }): void {
@@ -214,11 +246,14 @@ export class SessionManager {
     }
 
     const composed = this.composePrompt(trimmed);
+    const messageAttachments = this.attachments.map((att) => ({ ...att }));
     const userMessage: ChatMessage = {
       id: randomUUID(),
       role: "user",
       createdAt: Date.now(),
-      parts: [{ kind: "text", text: composed }],
+      // Keep the typed text for display; @path mentions stay only in the omp prompt.
+      parts: trimmed ? [{ kind: "text", text: trimmed }] : [],
+      attachments: messageAttachments,
     };
     this.messages = [...this.messages, userMessage];
     this.attachments = [];
@@ -525,12 +560,49 @@ export class SessionManager {
     };
   }
 
+  private async onSessionReady(_options: OmpClientOptions): Promise<void> {
+    await this.refreshSessionState();
+    // After VS Code is killed, local transcript is gone — reload from omp session.
+    if (this.messages.length === 0) {
+      await this.hydrateMessagesFromSession();
+    }
+  }
+
+  private async hydrateMessagesFromSession(): Promise<void> {
+    if (!this.client?.isReady || this.restoringHistory) {
+      return;
+    }
+    // Keep live streaming/UI state if we already have local messages.
+    if (this.messages.length > 0) {
+      return;
+    }
+    this.restoringHistory = true;
+    try {
+      const raw = await this.client.getMessages();
+      const restored = chatMessagesFromOmp(raw);
+      if (restored.length > 0) {
+        this.messages = restored;
+        this.currentAssistantId = undefined;
+        this.notify();
+      }
+    } catch {
+      // Non-fatal: chat can continue without restored transcript.
+    } finally {
+      this.restoringHistory = false;
+    }
+  }
+
   async refreshSessionState(): Promise<void> {
     if (!this.client?.isReady) {
       return;
     }
     try {
       const state = await this.client.getState();
+      const sid = state.sessionId;
+      if (typeof sid === "string" && sid.trim()) {
+        this.sessionId = sid.trim();
+        this.sessionIdStore?.set(this.sessionId);
+      }
       const modelRaw = state.model;
       if (modelRaw && typeof modelRaw === "object") {
         const m = modelRaw as Record<string, unknown>;

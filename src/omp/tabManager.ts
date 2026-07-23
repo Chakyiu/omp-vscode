@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { randomUUID } from "crypto";
-import { SessionManager } from "./sessionManager";
+import { SessionManager, type SessionIdStore } from "./sessionManager";
 import type { Attachment, ChatMessage, ContextUsage, SessionModelInfo, SessionStatus } from "./types";
 
 export interface ChatTabInfo {
@@ -46,7 +46,10 @@ export class TabManager {
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChange = this._onDidChange.event;
 
-  constructor(private readonly getWorkspaceCwd: () => string) {
+  constructor(
+    private readonly getWorkspaceCwd: () => string,
+    private readonly sessionIdStore?: SessionIdStore,
+  ) {
     this.createTab(true);
   }
 
@@ -55,7 +58,7 @@ export class TabManager {
   }
 
   private makeSession(): SessionManager {
-    return new SessionManager(this.getWorkspaceCwd);
+    return new SessionManager(this.getWorkspaceCwd, this.sessionIdStore);
   }
 
   private syncTitle(tab: TabRecord): void {
@@ -138,7 +141,11 @@ export class TabManager {
 
     if (this.order.length === 0) {
       this.activeId = "";
-      this.createTab(true);
+      const id = this.createTab(true);
+      void this.tabs
+        .get(id)
+        ?.session.ensureStarted({ continueLastSession: false, resumeSessionId: undefined })
+        .catch(() => undefined);
       return;
     }
 
@@ -151,7 +158,10 @@ export class TabManager {
 
   async newChat(): Promise<void> {
     const id = this.createTab(true);
-    void this.tabs.get(id)?.session.ensureStarted().catch(() => undefined);
+    void this.tabs
+      .get(id)
+      ?.session.ensureStarted({ continueLastSession: false, resumeSessionId: undefined })
+      .catch(() => undefined);
   }
 
   async restart(): Promise<void> {

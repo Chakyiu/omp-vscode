@@ -56,7 +56,9 @@ export class OmpRpcClient extends EventEmitter {
     if (this.options.autoApprove) {
       args.push("--auto-approve");
     }
-    if (this.options.continueLastSession) {
+    if (this.options.resumeSessionId) {
+      args.push("--resume", this.options.resumeSessionId);
+    } else if (this.options.continueLastSession) {
       args.push("--continue");
     }
     if (this.options.extraArgs?.length) {
@@ -204,6 +206,15 @@ export class OmpRpcClient extends EventEmitter {
       throw new Error(String(response.error ?? "get_state failed"));
     }
     return (response.data as Record<string, unknown>) ?? {};
+  }
+
+  async getMessages(): Promise<unknown[]> {
+    const response = await this.request({ type: "get_messages" }, 30_000);
+    if (response.success === false) {
+      throw new Error(String(response.error ?? "get_messages failed"));
+    }
+    const data = (response.data as Record<string, unknown> | undefined) ?? {};
+    return Array.isArray(data.messages) ? data.messages : [];
   }
 
   prompt(message: string): void {

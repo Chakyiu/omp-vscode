@@ -187,8 +187,8 @@
         },
         "ompChat.continueLastSession": {
           "type": "boolean",
-          "default": false,
-          "description": "Continue the previous omp session when starting the chat bridge."
+          "default": true,
+          "description": "Restore the latest omp session when the chat bridge starts (survives VS Code restarts/kills). Disable to always start a blank session."
         },
         "ompChat.extraArgs": {
           "type": "array",

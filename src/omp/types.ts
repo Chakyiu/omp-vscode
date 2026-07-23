@@ -30,6 +30,8 @@ export interface ChatMessage {
   parts: MessagePart[];
   createdAt: number;
   streaming?: boolean;
+  /** Attachments shown in the transcript (e.g. image previews). */
+  attachments?: Attachment[];
 }
 
 export type AttachmentKind = "file" | "folder" | "image" | "selection" | "text" | "context";
@@ -78,6 +80,16 @@ export interface SessionModelInfo {
   contextWindow?: number;
 }
 
+/** Workspace file / folder result for @-mention autocomplete */
+export interface FileSuggestItem {
+  path: string;
+  fsPath: string;
+  kind: "file" | "folder";
+  /** Optional short label override (e.g. "Current file") */
+  label?: string;
+  detail?: string;
+}
+
 export type HostToWebview =
   | {
       type: "ready";
@@ -107,7 +119,8 @@ export type HostToWebview =
       activeTabId?: string;
     }
   | { type: "contextUsage"; contextUsage: ContextUsage | null; model?: string }
-  | { type: "tabs"; tabs: ChatTabInfo[]; activeTabId: string };
+  | { type: "tabs"; tabs: ChatTabInfo[]; activeTabId: string }
+  | { type: "fileResults"; requestId: number; files: FileSuggestItem[] };
 
 export type WebviewToHost =
   | { type: "ready" }
@@ -141,7 +154,9 @@ export type WebviewToHost =
   | { type: "removeAttachment"; id: string }
   | { type: "copy"; text: string }
   | { type: "insert"; text: string }
-  | { type: "openFile"; path: string };
+  | { type: "openFile"; path: string }
+  | { type: "searchFiles"; query: string; requestId: number }
+  | { type: "runSlashCommand"; command: string };
 
 export interface OmpRpcEvent {
   type: string;
@@ -167,5 +182,7 @@ export interface OmpClientOptions {
   approvalMode?: string;
   autoApprove?: boolean;
   continueLastSession?: boolean;
+  /** Resume a specific omp session id (takes precedence over --continue). */
+  resumeSessionId?: string;
   extraArgs?: string[];
 }
