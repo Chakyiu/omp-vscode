@@ -101,6 +101,11 @@
         "command": "ompChat.attachExplorer",
         "title": "OMP: Attach to Chat",
         "icon": "$(attach)"
+      },
+      {
+        "command": "ompChat.showToolLog",
+        "title": "OMP: Show File Touch Log",
+        "icon": "$(output)"
       }
     ],
     "menus": {
@@ -221,6 +226,11 @@
           "type": "boolean",
           "default": true,
           "description": "Show model thinking blocks in the chat UI."
+        },
+        "ompChat.logFileTouches": {
+          "type": "boolean",
+          "default": true,
+          "description": "Log edit/write/delete tool calls and touched file paths to the \"OMP File Touches\" output channel."
         }
       }
     },

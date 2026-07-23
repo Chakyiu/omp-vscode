@@ -28,6 +28,7 @@
   const suggestEl = document.getElementById("suggest");
   const suggestHeaderEl = document.getElementById("suggestHeader");
   const suggestListEl = document.getElementById("suggestList");
+  const uiQuestionEl = document.getElementById("uiQuestion");
 
   let state = {
     status: { state: "starting", detail: "Starting…" },
@@ -40,6 +41,7 @@
     contextUsage: null,
     tabs: [],
     activeTabId: "",
+    uiQuestion: null,
   };
 
   let dragDepth = 0;
@@ -503,12 +505,21 @@
     return value.trim();
   }
 
-  function extractHashlinePath(text) {
+  function extractHashlinePaths(text) {
     const src = String(text || "");
-    // omp hashline sections look like: [relative/path.ts#A1B2]
-    const match = src.match(/\[\s*([^\]\n#]+?)\s*#[0-9A-Fa-f]{4,}\s*\]/);
-    if (!match || !match[1]) return "";
-    return match[1].trim().replace(/^["']|["']$/g, "");
+    const out = [];
+    const re = /\[\s*([^\]\n#]+?)\s*#[0-9A-Fa-f]{4,}\s*\]/g;
+    let match;
+    while ((match = re.exec(src))) {
+      const value = match[1] ? match[1].trim().replace(/^["']|["']$/g, "") : "";
+      if (value) out.push(value);
+    }
+    return out;
+  }
+
+  function extractHashlinePath(text) {
+    const all = extractHashlinePaths(text);
+    return all.length ? all[0] : "";
   }
 
   function pickToolPathFromObject(obj) {
@@ -679,12 +690,25 @@
       const openAttr = collapseOpenAttr(collapseId, running);
       const liveClass = running ? " live" : "";
       const title = toolTitle(part.name, part.inputPreview);
-      const filePath =
+      const filePaths = [];
+      if (Array.isArray(part.filePaths)) {
+        for (let i = 0; i < part.filePaths.length; i += 1) {
+          const p = normalizeToolFilePath(part.filePaths[i]);
+          if (p && filePaths.indexOf(p) < 0) filePaths.push(p);
+        }
+      }
+      const fallbackPath =
         extractToolFilePath(part.name, part.inputPreview) ||
         extractToolFilePath(part.name, part.outputPreview);
-      const summary = filePath ? "" : toolSummary(part.name, part.inputPreview);
-      const summaryHtml = filePath
-        ? '<span class="collapse-meta">' + renderFileLink(filePath) + '</span>'
+      if (fallbackPath && filePaths.indexOf(fallbackPath) < 0) filePaths.push(fallbackPath);
+      // Recover extra hashline paths from previews when available.
+      extractHashlinePaths(part.inputPreview || "").concat(extractHashlinePaths(part.outputPreview || "")).forEach(function (p) {
+        const n = normalizeToolFilePath(p);
+        if (n && filePaths.indexOf(n) < 0) filePaths.push(n);
+      });
+      const summary = filePaths.length ? "" : toolSummary(part.name, part.inputPreview);
+      const summaryHtml = filePaths.length
+        ? '<span class="collapse-meta">' + filePaths.map(renderFileLink).join('<span class="file-sep"> · </span>') + '</span>'
         : (summary ? '<span class="collapse-meta">' + escapeHtml(summary) + '</span>' : "");
       const sections = [];
       if (part.inputPreview) {
@@ -1032,6 +1056,7 @@
       }
 
       renderAttachments();
+      renderUiQuestion();
     } catch (err) {
       console.error("OMP Chat render failed", err);
       if (statusDot) {
@@ -1041,6 +1066,125 @@
     }
   }
 
+
+
+  function answerUiQuestion(payload) {
+    if (!payload || !payload.id) return;
+    vscode.postMessage({
+      type: "answerUiQuestion",
+      id: payload.id,
+      confirmed: payload.confirmed,
+      value: payload.value,
+      cancelled: payload.cancelled,
+    });
+  }
+
+  let uiQuestionSignature = "";
+
+  function renderUiQuestion() {
+    if (!uiQuestionEl) return;
+    const q = state.uiQuestion;
+    if (!q) {
+      uiQuestionSignature = "";
+      uiQuestionEl.hidden = true;
+      uiQuestionEl.innerHTML = "";
+      return;
+    }
+
+    const signature =
+      q.id +
+      "\0" +
+      q.method +
+      "\0" +
+      (q.title || "") +
+      "\0" +
+      (q.message || "") +
+      "\0" +
+      (Array.isArray(q.options) ? q.options.join("\n") : "") +
+      "\0" +
+      (q.placeholder || "") +
+      "\0" +
+      (q.prefill || "");
+    if (signature === uiQuestionSignature && !uiQuestionEl.hidden) {
+      return;
+    }
+    uiQuestionSignature = signature;
+
+    const title = q.title || (q.method === "confirm" ? "Confirm" : "Question");
+    const message = q.message || "";
+    let body = "";
+
+    if (q.method === "confirm") {
+      body =
+        '<div class="ui-question-actions">' +
+          '<button type="button" class="ui-q-btn" data-action="confirm-no">No</button>' +
+          '<button type="button" class="ui-q-btn primary" data-action="confirm-yes">Yes</button>' +
+        '</div>';
+    } else if (q.method === "select") {
+      const options = Array.isArray(q.options) ? q.options : [];
+      body =
+        '<div class="ui-question-options">' +
+        options
+          .map(function (opt, i) {
+            return (
+              '<button type="button" class="ui-q-option" data-action="select-option" data-value="' +
+              escapeHtml(opt) +
+              '">' +
+              '<span class="ui-q-option-index">' +
+              (i + 1) +
+              "</span>" +
+              '<span class="ui-q-option-label">' +
+              escapeHtml(opt) +
+              "</span>" +
+              "</button>"
+            );
+          })
+          .join("") +
+        "</div>" +
+        '<div class="ui-question-actions">' +
+          '<button type="button" class="ui-q-btn" data-action="cancel">Cancel</button>' +
+        "</div>";
+    } else {
+      // input / editor
+      body =
+        '<div class="ui-question-input-wrap">' +
+          '<textarea class="ui-q-input" rows="' +
+          (q.method === "editor" ? "4" : "2") +
+          '" placeholder="' +
+          escapeHtml(q.placeholder || "Type your answer…") +
+          '">' +
+          escapeHtml(q.prefill || "") +
+          "</textarea>" +
+        "</div>" +
+        '<div class="ui-question-actions">' +
+          '<button type="button" class="ui-q-btn" data-action="cancel">Cancel</button>' +
+          '<button type="button" class="ui-q-btn primary" data-action="submit-value">Submit</button>' +
+        "</div>";
+    }
+
+    uiQuestionEl.hidden = false;
+    uiQuestionEl.innerHTML =
+      '<div class="ui-question-card" data-id="' +
+      escapeHtml(q.id) +
+      '">' +
+        '<div class="ui-question-header">' +
+          '<div class="ui-question-kicker">OMP needs your answer</div>' +
+          '<div class="ui-question-title">' +
+          escapeHtml(title) +
+          "</div>" +
+          (message
+            ? '<div class="ui-question-message">' + escapeHtml(message) + "</div>"
+            : "") +
+        "</div>" +
+        body +
+      "</div>";
+
+    const input = uiQuestionEl.querySelector(".ui-q-input");
+    if (input) {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+  }
 
   function basename(pathValue) {
     const parts = String(pathValue || "").split(/[\\/]/);
@@ -1493,6 +1637,40 @@
     });
   }
 
+
+  if (uiQuestionEl) {
+    uiQuestionEl.addEventListener("click", function (e) {
+      const btn = e.target && e.target.closest ? e.target.closest("[data-action]") : null;
+      if (!btn) return;
+      const card = uiQuestionEl.querySelector(".ui-question-card");
+      const id = card && card.getAttribute("data-id");
+      if (!id) return;
+      const action = btn.getAttribute("data-action");
+      if (action === "confirm-yes") {
+        answerUiQuestion({ id: id, confirmed: true });
+      } else if (action === "confirm-no") {
+        answerUiQuestion({ id: id, confirmed: false });
+      } else if (action === "select-option") {
+        answerUiQuestion({ id: id, value: btn.getAttribute("data-value") || "" });
+      } else if (action === "submit-value") {
+        const input = uiQuestionEl.querySelector(".ui-q-input");
+        answerUiQuestion({ id: id, value: input ? input.value : "" });
+      } else if (action === "cancel") {
+        answerUiQuestion({ id: id, cancelled: true });
+      }
+    });
+    uiQuestionEl.addEventListener("keydown", function (e) {
+      if (e.key !== "Enter" || e.shiftKey) return;
+      const input = e.target && e.target.classList && e.target.classList.contains("ui-q-input") ? e.target : null;
+      if (!input) return;
+      e.preventDefault();
+      const card = uiQuestionEl.querySelector(".ui-question-card");
+      const id = card && card.getAttribute("data-id");
+      if (!id) return;
+      answerUiQuestion({ id: id, value: input.value });
+    });
+  }
+
   window.addEventListener("message", function (event) {
     const msg = event.data;
     if (msg == null || msg.type == null) return;
@@ -1513,6 +1691,7 @@
         contextUsage: msg.contextUsage != null ? msg.contextUsage : state.contextUsage,
         tabs: msg.tabs || [],
         activeTabId: nextTabId,
+        uiQuestion: msg.uiQuestion !== undefined ? msg.uiQuestion : null,
       };
       render();
       return;
@@ -1540,6 +1719,12 @@
       if (msg.contextUsage !== undefined) state.contextUsage = msg.contextUsage;
       if (msg.tabs) state.tabs = msg.tabs;
       if (msg.activeTabId) state.activeTabId = msg.activeTabId;
+      if (msg.uiQuestion !== undefined) state.uiQuestion = msg.uiQuestion;
+      render();
+      return;
+    }
+    if (msg.type === "uiQuestion") {
+      state.uiQuestion = msg.question || null;
       render();
       return;
     }

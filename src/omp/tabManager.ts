@@ -1,7 +1,14 @@
 import * as vscode from "vscode";
 import { randomUUID } from "crypto";
 import { SessionManager, type SessionIdStore } from "./sessionManager";
-import type { Attachment, ChatMessage, ContextUsage, SessionModelInfo, SessionStatus } from "./types";
+import type {
+  Attachment,
+  ChatMessage,
+  ContextUsage,
+  SessionModelInfo,
+  SessionStatus,
+  UiQuestion,
+} from "./types";
 
 export interface ChatTabInfo {
   id: string;
@@ -339,6 +346,17 @@ export class TabManager {
 
   getAttachments(): Attachment[] {
     return this.active().getAttachments();
+  }
+
+  getUiQuestion(): UiQuestion | null {
+    return this.active().getUiQuestion();
+  }
+
+  answerUiQuestion(
+    id: string,
+    answer: { confirmed?: boolean; value?: string; cancelled?: boolean },
+  ): void {
+    this.active().answerUiQuestion(id, answer);
   }
 
   getContextUsage(): ContextUsage | null {

@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { ChatViewProvider } from "./chat/chatViewProvider";
 import { TabManager, type OpenSessionsState } from "./omp/tabManager";
+import { disposeToolFileLog, showToolFileLog } from "./omp/toolFileLog";
 
 function workspaceCwd(): string {
   const folder = vscode.workspace.workspaceFolders?.[0];
@@ -66,6 +67,12 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("ompChat.open", async () => {
       await vscode.commands.executeCommand("ompChat.sidebar.focus");
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("ompChat.showToolLog", () => {
+      showToolFileLog();
     }),
   );
 
@@ -176,6 +183,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push({
     dispose: () => {
       void sessions.dispose();
+      disposeToolFileLog();
     },
   });
 

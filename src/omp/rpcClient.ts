@@ -221,6 +221,17 @@ export class OmpRpcClient extends EventEmitter {
     this.send({ type: "prompt", message });
   }
 
+  /** Answer an omp `extension_ui_request` (confirm / select / input / editor). */
+  respondExtensionUi(
+    id: string,
+    response:
+      | { confirmed: boolean }
+      | { value: string }
+      | { cancelled: true; timedOut?: boolean },
+  ): void {
+    this.send({ type: "extension_ui_response", id, ...response });
+  }
+
   abort(): void {
     try {
       this.send({ type: "abort" });

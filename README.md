@@ -65,6 +65,7 @@ Then press **F5** (`Run Extension`) to open an Extension Development Host.
 | `ompChat.continueLastSession` | Restore all open omp chat tabs/sessions on start (default on; survives VS Code kills) |
 | `ompChat.extraArgs` | Extra CLI args |
 | `ompChat.showThinking` | Show/hide thinking blocks in UI |
+| `ompChat.logFileTouches` | Log edit/write/delete touched paths to **OMP File Touches** output channel |
 
 ## Architecture
 
@@ -103,7 +104,9 @@ code --install-extension oh-my-pi-chat-0.1.0.vsix
 
 ## Notes / roadmap
 
-- Approval prompts from omp are not yet rendered as interactive UI cards (use `approvalMode` / `autoApprove` for now)
+- Interactive omp questions (`extension_ui_request`: confirm / select / input / editor) render above the composer
+- Edit/write/delete file touches are logged to the **OMP File Touches** output channel (`OMP: Show File Touch Log`)
+- Tool auto-approval still uses `approvalMode` / `autoApprove` (separate from question cards)
 - Multi-workspace root picker and inline apply/diff are natural next steps
 - ACP (`omp acp`) is an alternative transport; this extension uses native `--mode rpc` for richer streaming events
 

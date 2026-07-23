@@ -9,6 +9,8 @@ export interface ToolCallPart {
   status: ToolStatus;
   inputPreview?: string;
   outputPreview?: string;
+  /** Paths touched by edit/write/delete-style tools (best-effort). */
+  filePaths?: string[];
 }
 
 export interface TextPart {
@@ -94,6 +96,21 @@ export interface FileSuggestItem {
   detail?: string;
 }
 
+/** Interactive question from omp `extension_ui_request` (select/confirm/input/editor). */
+export type UiQuestionMethod = "select" | "confirm" | "input" | "editor";
+
+export interface UiQuestion {
+  id: string;
+  method: UiQuestionMethod;
+  title?: string;
+  message?: string;
+  options?: string[];
+  placeholder?: string;
+  prefill?: string;
+  timeoutMs?: number;
+  createdAt: number;
+}
+
 export type HostToWebview =
   | {
       type: "ready";
@@ -107,6 +124,7 @@ export type HostToWebview =
       contextUsage?: ContextUsage | null;
       tabs?: ChatTabInfo[];
       activeTabId?: string;
+      uiQuestion?: UiQuestion | null;
     }
   | { type: "status"; status: SessionStatus }
   | { type: "messages"; messages: ChatMessage[] }
@@ -121,10 +139,12 @@ export type HostToWebview =
       contextUsage?: ContextUsage | null;
       tabs?: ChatTabInfo[];
       activeTabId?: string;
+      uiQuestion?: UiQuestion | null;
     }
   | { type: "contextUsage"; contextUsage: ContextUsage | null; model?: string }
   | { type: "tabs"; tabs: ChatTabInfo[]; activeTabId: string }
-  | { type: "fileResults"; requestId: number; files: FileSuggestItem[] };
+  | { type: "fileResults"; requestId: number; files: FileSuggestItem[] }
+  | { type: "uiQuestion"; question: UiQuestion | null };
 
 export type WebviewToHost =
   | { type: "ready" }
@@ -161,7 +181,14 @@ export type WebviewToHost =
   | { type: "openFile"; path: string }
   | { type: "openExternal"; url: string }
   | { type: "searchFiles"; query: string; requestId: number }
-  | { type: "runSlashCommand"; command: string };
+  | { type: "runSlashCommand"; command: string }
+  | {
+      type: "answerUiQuestion";
+      id: string;
+      confirmed?: boolean;
+      value?: string;
+      cancelled?: boolean;
+    };
 
 export interface OmpRpcEvent {
   type: string;

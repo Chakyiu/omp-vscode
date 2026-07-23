@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { randomUUID } from "crypto";
 import { OmpRpcClient } from "./rpcClient";
 import { chatMessagesFromOmp } from "./sessionHistory";
+import { logToolFileTouch } from "./toolFileLog";
 import type {
   Attachment,
   ChatMessage,
@@ -12,6 +13,8 @@ import type {
   SessionModelInfo,
   SessionStatus,
   ToolCallPart,
+  UiQuestion,
+  UiQuestionMethod,
 } from "./types";
 
 const TOOL_PATH_KEYS = [
@@ -51,36 +54,72 @@ function asToolInputObject(value: unknown): Record<string, unknown> | undefined 
   return undefined;
 }
 
-function extractHashlinePath(text: string): string | undefined {
-  const match = String(text || "").match(/\[\s*([^\]\n#]+?)\s*#[0-9A-Fa-f]{4,}\s*\]/);
-  const value = match?.[1]?.trim().replace(/^['"]|['"]$/g, "");
-  return value || undefined;
+function extractHashlinePaths(text: string): string[] {
+  const out: string[] = [];
+  const re = /\[\s*([^\]\n#]+?)\s*#[0-9A-Fa-f]{4,}\s*\]/g;
+  const src = String(text || "");
+  let match: RegExpExecArray | null = re.exec(src);
+  while (match) {
+    const value = match[1]?.trim().replace(/^['"]|['"]$/g, "");
+    if (value) {
+      out.push(value);
+    }
+    match = re.exec(src);
+  }
+  return out;
 }
 
-function pickToolPath(obj: Record<string, unknown>): string | undefined {
-  for (const key of TOOL_PATH_KEYS) {
-    const value = obj[key];
-    if (typeof value === "string" && value.trim()) {
-      return value.trim();
+function extractHashlinePath(text: string): string | undefined {
+  return extractHashlinePaths(text)[0];
+}
+
+function collectToolPaths(value: unknown): string[] {
+  const paths: string[] = [];
+  const push = (raw: unknown) => {
+    if (typeof raw !== "string") {
+      return;
     }
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return;
+    }
+    paths.push(trimmed);
+    for (const nested of extractHashlinePaths(trimmed)) {
+      paths.push(nested);
+    }
+  };
+
+  const obj = asToolInputObject(value);
+  if (!obj) {
+    if (typeof value === "string") {
+      push(value);
+    }
+    return [...new Set(paths)];
   }
-  for (const key of ["input", "_input", "patch"] as const) {
-    const nested = obj[key];
-    if (typeof nested === "string" && nested.trim()) {
-      const fromHashline = extractHashlinePath(nested);
-      if (fromHashline) {
-        return fromHashline;
-      }
-    }
+
+  for (const key of TOOL_PATH_KEYS) {
+    push(obj[key]);
+  }
+  for (const key of ["input", "_input", "patch", "diff"] as const) {
+    push(obj[key]);
   }
   if (Array.isArray(obj.paths)) {
     for (const item of obj.paths) {
-      if (typeof item === "string" && item.trim()) {
-        return item.trim();
+      push(item);
+    }
+  }
+  if (Array.isArray(obj.edits)) {
+    for (const edit of obj.edits) {
+      if (edit && typeof edit === "object") {
+        paths.push(...collectToolPaths(edit));
       }
     }
   }
-  return undefined;
+  return [...new Set(paths)];
+}
+
+function pickToolPath(obj: Record<string, unknown>): string | undefined {
+  return collectToolPaths(obj)[0];
 }
 
 function compactToolInput(value: unknown): unknown {
@@ -165,6 +204,9 @@ export class SessionManager {
   private restoringHistory = false;
   /** Prompts waiting for the current turn to finish before being sent. */
   private pendingPrompts: Array<{ id: string; composed: string }> = [];
+  /** Interactive omp extension UI questions waiting for a user answer. */
+  private pendingUiQuestions: UiQuestion[] = [];
+  private uiQuestionTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChange = this._onDidChange.event;
 
@@ -183,6 +225,11 @@ export class SessionManager {
 
   getAttachments(): Attachment[] {
     return this.attachments;
+  }
+
+  /** Oldest unanswered interactive UI question, if any. */
+  getUiQuestion(): UiQuestion | null {
+    return this.pendingUiQuestions[0] ?? null;
   }
 
   getContextUsage(): ContextUsage | null {
@@ -253,6 +300,7 @@ export class SessionManager {
   async start(overrides?: Partial<OmpClientOptions>): Promise<void> {
     await this.disposeClient();
     this.pendingPrompts = [];
+    this.clearUiQuestions({ cancelRemote: false });
     this.setStatus({ state: "starting", detail: "Launching omp…" });
 
     const options = this.readConfig(overrides);
@@ -315,6 +363,7 @@ export class SessionManager {
     this.currentAssistantId = undefined;
     this.attachments = [];
     this.pendingPrompts = [];
+    this.clearUiQuestions({ cancelRemote: false });
     this.contextUsage = null;
     this.sessionModel = null;
     this.sessionId = undefined;
@@ -399,6 +448,7 @@ export class SessionManager {
   abort(): void {
     this.client?.abort();
     this.clearQueuedPrompts();
+    this.clearUiQuestions({ cancelRemote: true });
     if (this.currentAssistantId) {
       this.patchMessage(this.currentAssistantId, (msg) => ({
         ...msg,
@@ -636,30 +686,47 @@ export class SessionManager {
   }
 
   private upsertTool(partial: Partial<ToolCallPart> & { id: string; name?: string }): void {
+    let nextName = partial.name ?? "tool";
+    let nextStatus = partial.status ?? "running";
+    let nextPaths = partial.filePaths ?? [];
     this.updateAssistant((parts) => {
       const idx = parts.findIndex((p) => p.kind === "tool" && p.id === partial.id);
       if (idx >= 0) {
         const current = parts[idx] as ToolCallPart;
+        nextName = partial.name ?? current.name;
+        nextStatus = partial.status ?? current.status;
+        nextPaths = partial.filePaths ?? current.filePaths ?? [];
         parts[idx] = {
           ...current,
           ...partial,
           kind: "tool",
           id: partial.id,
-          name: partial.name ?? current.name,
-          status: partial.status ?? current.status,
+          name: nextName,
+          status: nextStatus,
+          filePaths: nextPaths,
         };
         return parts;
       }
       this.closeOpenThinking(parts);
+      nextName = partial.name ?? "tool";
+      nextStatus = partial.status ?? "running";
+      nextPaths = partial.filePaths ?? [];
       parts.push({
         kind: "tool",
         id: partial.id,
-        name: partial.name ?? "tool",
-        status: partial.status ?? "running",
+        name: nextName,
+        status: nextStatus,
         inputPreview: partial.inputPreview,
         outputPreview: partial.outputPreview,
+        filePaths: nextPaths,
       });
       return parts;
+    });
+    logToolFileTouch({
+      id: partial.id,
+      name: nextName,
+      paths: nextPaths,
+      status: nextStatus,
     });
   }
 
@@ -682,11 +749,13 @@ export class SessionManager {
       case "tool_execution_start": {
         const id = String(event.toolCallId ?? event.id ?? randomUUID());
         const name = String(event.toolName ?? event.name ?? "tool");
+        const rawArgs = event.args ?? event.input;
         this.upsertTool({
           id,
           name,
           status: "running",
-          inputPreview: preview(event.args ?? event.input, 800),
+          inputPreview: preview(rawArgs, 800),
+          filePaths: collectToolPaths(rawArgs),
         });
         break;
       }
@@ -790,6 +859,9 @@ export class SessionManager {
         this.setStatus({ state: "error", detail: message });
         break;
       }
+      case "extension_ui_request":
+        this.handleExtensionUiRequest(event);
+        break;
       default:
         break;
     }
@@ -813,11 +885,13 @@ export class SessionManager {
       case "toolCall_start": {
         const id = String(ev.toolCallId ?? ev.id ?? randomUUID());
         const name = String(ev.toolName ?? ev.name ?? "tool");
+        const rawArgs = ev.args ?? ev.input;
         this.upsertTool({
           id,
           name,
           status: "running",
-          inputPreview: preview(ev.args ?? ev.input, 800),
+          inputPreview: preview(rawArgs, 800),
+          filePaths: collectToolPaths(rawArgs),
         });
         break;
       }
@@ -930,6 +1004,187 @@ export class SessionManager {
     }
   }
 
+
+  answerUiQuestion(
+    id: string,
+    answer: { confirmed?: boolean; value?: string; cancelled?: boolean; timedOut?: boolean },
+  ): void {
+    const idx = this.pendingUiQuestions.findIndex((q) => q.id === id);
+    if (idx < 0) {
+      return;
+    }
+    this.clearUiQuestionTimer(id);
+    this.pendingUiQuestions = this.pendingUiQuestions.filter((q) => q.id !== id);
+    try {
+      if (!this.client?.isReady) {
+        this.notify();
+        return;
+      }
+      if (answer.cancelled) {
+        this.client.respondExtensionUi(id, {
+          cancelled: true,
+          ...(answer.timedOut ? { timedOut: true } : {}),
+        });
+      } else if (typeof answer.confirmed === "boolean") {
+        this.client.respondExtensionUi(id, { confirmed: answer.confirmed });
+      } else if (typeof answer.value === "string") {
+        this.client.respondExtensionUi(id, { value: answer.value });
+      } else {
+        this.client.respondExtensionUi(id, { cancelled: true });
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.setStatus({ state: "error", detail: message });
+    }
+    this.notify();
+  }
+
+  private handleExtensionUiRequest(event: OmpRpcEvent): void {
+    const id = String(event.id ?? "").trim();
+    const method = String(event.method ?? "").trim();
+    if (!id || !method) {
+      return;
+    }
+
+    if (method === "cancel") {
+      const targetId = String(event.targetId ?? event.target_id ?? "").trim();
+      if (targetId) {
+        this.answerUiQuestion(targetId, { cancelled: true });
+      } else {
+        this.clearUiQuestions({ cancelRemote: true });
+      }
+      return;
+    }
+
+    if (method === "notify") {
+      const message =
+        String(event.message ?? event.text ?? event.title ?? "Notification").trim() ||
+        "Notification";
+      const notifyType = String(event.notifyType ?? event.notify_type ?? "info");
+      if (notifyType === "error") {
+        void vscode.window.showErrorMessage(message);
+      } else if (notifyType === "warning") {
+        void vscode.window.showWarningMessage(message);
+      } else {
+        void vscode.window.showInformationMessage(message);
+      }
+      return;
+    }
+
+    if (method === "open_url" || method === "openUrl") {
+      const url = String(event.url ?? event.text ?? event.message ?? "").trim();
+      if (url) {
+        void vscode.env.openExternal(vscode.Uri.parse(url));
+      }
+      return;
+    }
+
+    if (method === "setStatus" || method === "set_status") {
+      const detail = String(event.statusText ?? event.status_text ?? event.text ?? "").trim();
+      if (detail) {
+        this.setStatus({ ...this.status, detail });
+      }
+      return;
+    }
+
+    if (
+      method === "setWidget" ||
+      method === "set_widget" ||
+      method === "setTitle" ||
+      method === "set_title" ||
+      method === "set_editor_text" ||
+      method === "setEditorText"
+    ) {
+      // Passive terminal/editor chrome; ignore in the chat host.
+      return;
+    }
+
+    if (
+      method !== "select" &&
+      method !== "confirm" &&
+      method !== "input" &&
+      method !== "editor"
+    ) {
+      // Unknown interactive method — cancel so omp does not hang.
+      try {
+        this.client?.respondExtensionUi(id, { cancelled: true });
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    const optionsRaw = event.options;
+    const options = Array.isArray(optionsRaw)
+      ? optionsRaw.map((item) => String(item)).filter(Boolean)
+      : undefined;
+    const timeoutRaw = event.timeout;
+    const timeoutMs =
+      typeof timeoutRaw === "number" && Number.isFinite(timeoutRaw) && timeoutRaw > 0
+        ? Math.floor(timeoutRaw)
+        : undefined;
+
+    const question: UiQuestion = {
+      id,
+      method: method as UiQuestionMethod,
+      title: event.title != null ? String(event.title) : undefined,
+      message: event.message != null ? String(event.message) : undefined,
+      options,
+      placeholder: event.placeholder != null ? String(event.placeholder) : undefined,
+      prefill: event.prefill != null ? String(event.prefill) : undefined,
+      timeoutMs,
+      createdAt: Date.now(),
+    };
+
+    // Replace any existing question with the same id.
+    this.clearUiQuestionTimer(id);
+    this.pendingUiQuestions = [
+      ...this.pendingUiQuestions.filter((q) => q.id !== id),
+      question,
+    ];
+
+    if (timeoutMs) {
+      const timer = setTimeout(() => {
+        this.answerUiQuestion(id, { cancelled: true, timedOut: true });
+      }, timeoutMs);
+      this.uiQuestionTimers.set(id, timer);
+    }
+
+    this.setStatus({
+      state: this.status.state === "busy" ? "busy" : this.status.state,
+      detail: question.title || question.message || "Waiting for your answer…",
+    });
+    this.notify();
+  }
+
+  private clearUiQuestionTimer(id: string): void {
+    const timer = this.uiQuestionTimers.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      this.uiQuestionTimers.delete(id);
+    }
+  }
+
+  private clearUiQuestions(options: { cancelRemote: boolean }): void {
+    const pending = [...this.pendingUiQuestions];
+    for (const question of pending) {
+      this.clearUiQuestionTimer(question.id);
+    }
+    this.pendingUiQuestions = [];
+    if (options.cancelRemote && this.client?.isReady) {
+      for (const question of pending) {
+        try {
+          this.client.respondExtensionUi(question.id, { cancelled: true });
+        } catch {
+          // ignore
+        }
+      }
+    }
+    if (pending.length > 0) {
+      this.notify();
+    }
+  }
+
   async dispose(): Promise<void> {
     await this.disposeClient();
     this.setStatus({ state: "stopped" });
@@ -937,6 +1192,7 @@ export class SessionManager {
   }
 
   private async disposeClient(): Promise<void> {
+    this.clearUiQuestions({ cancelRemote: false });
     if (!this.client) {
       return;
     }

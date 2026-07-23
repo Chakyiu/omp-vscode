@@ -3,6 +3,7 @@ import { AttachmentService } from "../omp/attachmentService";
 import { pickMode, pickModel } from "../omp/modelCatalog";
 import { formatSessionWhen, listOmpSessions } from "../omp/sessionCatalog";
 import type { TabManager } from "../omp/tabManager";
+import { showToolFileLog } from "../omp/toolFileLog";
 import type { FileSuggestItem, HostToWebview, WebviewToHost } from "../omp/types";
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -240,6 +241,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case "runSlashCommand":
         await this.runSlashCommand(msg.command);
         break;
+      case "answerUiQuestion":
+        this.sessions.answerUiQuestion(msg.id, {
+          confirmed: msg.confirmed,
+          value: msg.value,
+          cancelled: msg.cancelled,
+        });
+        break;
       case "openFile": {
         const uri = this.resolveWorkspaceUri(msg.path);
         if (!uri) {
@@ -329,6 +337,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       contextUsage: this.sessions.getContextUsage(),
       tabs: this.sessions.getTabs(),
       activeTabId: this.sessions.getActiveId(),
+      uiQuestion: this.sessions.getUiQuestion(),
     });
   }
 
@@ -418,6 +427,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       </div>
     </section>
 
+    <div id="uiQuestion" class="ui-question" hidden></div>
     <footer class="composer-wrap">
       <div class="composer">
         <div id="suggest" class="suggest" hidden>
@@ -585,6 +595,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       [
         { label: "Select model", description: this.currentModelLabel() },
         { label: "Context usage", description: usageDesc },
+        { label: "File touch log", description: "Show edit/write/delete paths" },
         { label: "Restart session", description: "Reload omp RPC bridge" },
         { label: "Attach current file" },
         { label: "Attach selection" },
@@ -598,6 +609,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       await this.pickModelAndApply();
     } else if (picked.label === "Context usage") {
       vscode.window.showInformationMessage(`Context usage: ${usageDesc}`);
+    } else if (picked.label === "File touch log") {
+      showToolFileLog();
     } else if (picked.label === "Restart session") {
       await this.restart();
     } else if (picked.label === "Attach current file") {
