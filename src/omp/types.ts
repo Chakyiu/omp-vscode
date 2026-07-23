@@ -19,6 +19,7 @@ export interface TextPart {
 export interface ThinkingPart {
   kind: "thinking";
   text: string;
+  streaming?: boolean;
 }
 
 export type MessagePart = TextPart | ThinkingPart | ToolCallPart;
@@ -31,7 +32,7 @@ export interface ChatMessage {
   streaming?: boolean;
 }
 
-export type AttachmentKind = "file" | "folder" | "image" | "selection" | "text";
+export type AttachmentKind = "file" | "folder" | "image" | "selection" | "text" | "context";
 
 export interface Attachment {
   id: string;
@@ -55,6 +56,28 @@ export interface SessionStatus {
   detail?: string;
 }
 
+/** Session context window usage from omp get_state.contextUsage */
+export interface ContextUsage {
+  tokens: number;
+  contextWindow: number;
+  /** Percentage of the context window used (0-100). */
+  percent: number;
+}
+
+export interface ChatTabInfo {
+  id: string;
+  title: string;
+  busy: boolean;
+  status: SessionStatus["state"];
+}
+
+export interface SessionModelInfo {
+  id: string;
+  name: string;
+  provider?: string;
+  contextWindow?: number;
+}
+
 export type HostToWebview =
   | {
       type: "ready";
@@ -62,19 +85,43 @@ export type HostToWebview =
       messages: ChatMessage[];
       attachments: Attachment[];
       showThinking: boolean;
+      model?: string;
+      mode?: string;
+      displayName?: string;
+      contextUsage?: ContextUsage | null;
+      tabs?: ChatTabInfo[];
+      activeTabId?: string;
     }
   | { type: "status"; status: SessionStatus }
   | { type: "messages"; messages: ChatMessage[] }
   | { type: "attachments"; attachments: Attachment[] }
   | { type: "error"; message: string }
-  | { type: "config"; showThinking: boolean };
+  | {
+      type: "config";
+      showThinking?: boolean;
+      model?: string;
+      mode?: string;
+      displayName?: string;
+      contextUsage?: ContextUsage | null;
+      tabs?: ChatTabInfo[];
+      activeTabId?: string;
+    }
+  | { type: "contextUsage"; contextUsage: ContextUsage | null; model?: string }
+  | { type: "tabs"; tabs: ChatTabInfo[]; activeTabId: string };
 
 export type WebviewToHost =
   | { type: "ready" }
   | { type: "send"; text: string }
   | { type: "stop" }
   | { type: "newChat" }
+  | { type: "switchTab"; id: string }
+  | { type: "closeTab"; id: string }
   | { type: "restart" }
+  | { type: "history" }
+  | { type: "moreMenu" }
+  | { type: "pickModel" }
+  | { type: "pickMode" }
+  | { type: "showUsage" }
   | { type: "attachMenu" }
   | { type: "attachFiles" }
   | { type: "attachFolder" }

@@ -12,3 +12,5 @@ debug-*
 *.webp
 *.vsix
 package-lock.json
+biome.json
+*.json.bak

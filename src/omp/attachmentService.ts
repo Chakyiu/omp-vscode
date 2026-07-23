@@ -4,7 +4,9 @@ import * as path from "path";
 import { randomUUID } from "crypto";
 import * as vscode from "vscode";
 import type { Attachment, AttachmentKind } from "./types";
-import type { SessionManager } from "./sessionManager";
+type AttachmentHost = {
+  addAttachment(attachment: Omit<import("./types").Attachment, "id"> & { id?: string }): void;
+};
 
 const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"]);
 const TEXT_EXTS = new Set([
@@ -68,7 +70,7 @@ async function maybePreviewDataUrl(fsPath: string, kind: AttachmentKind): Promis
 
 export class AttachmentService {
   constructor(
-    private readonly sessions: SessionManager,
+    private readonly sessions: AttachmentHost,
     private readonly storageUri: vscode.Uri,
   ) {}
 

@@ -6,6 +6,12 @@ It launches a local `omp --mode rpc` session and streams replies, thinking, and 
 
 ## Features
 
+- Multi-tab chats (each tab is its own `omp` session)
+
+- Model picker button (lists `omp models --json`, restarts session on change)
+- Per-session context usage meter from omp `get_state.contextUsage`
+
+
 - Activity-bar **Chat** sidebar (Copilot-like)
 - Streaming assistant responses over omp RPC
 - Collapsible **thinking** blocks

@@ -4,9 +4,11 @@ import { OmpRpcClient } from "./rpcClient";
 import type {
   Attachment,
   ChatMessage,
+  ContextUsage,
   MessagePart,
   OmpClientOptions,
   OmpRpcEvent,
+  SessionModelInfo,
   SessionStatus,
   ToolCallPart,
 } from "./types";
@@ -28,6 +30,8 @@ export class SessionManager {
   private messages: ChatMessage[] = [];
   private attachments: Attachment[] = [];
   private currentAssistantId: string | undefined;
+  private contextUsage: ContextUsage | null = null;
+  private sessionModel: SessionModelInfo | null = null;
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChange = this._onDidChange.event;
 
@@ -43,6 +47,25 @@ export class SessionManager {
 
   getAttachments(): Attachment[] {
     return this.attachments;
+  }
+
+  getContextUsage(): ContextUsage | null {
+    return this.contextUsage;
+  }
+
+  getSessionModel(): SessionModelInfo | null {
+    return this.sessionModel;
+  }
+
+  getModelLabel(): string {
+    if (this.sessionModel?.name) {
+      return this.sessionModel.name;
+    }
+    if (this.sessionModel?.id) {
+      return this.sessionModel.id;
+    }
+    const cfgModel = vscode.workspace.getConfiguration("ompChat").get<string>("model", "");
+    return cfgModel && cfgModel.trim() ? cfgModel.trim() : "Model";
   }
 
   private setStatus(status: SessionStatus): void {
@@ -86,6 +109,7 @@ export class SessionManager {
 
     client.on("ready", () => {
       this.setStatus({ state: "ready", detail: "Connected to omp" });
+      void this.refreshSessionState();
     });
 
     client.on("error", (err) => {
@@ -133,6 +157,8 @@ export class SessionManager {
     this.messages = [];
     this.currentAssistantId = undefined;
     this.attachments = [];
+    this.contextUsage = null;
+    this.sessionModel = null;
     this.notify();
     // Always start a fresh session for New Chat.
     await this.start({ continueLastSession: false });
@@ -300,16 +326,20 @@ export class SessionManager {
   }
 
   private appendText(kind: "text" | "thinking", delta: string): void {
-    if (!delta) {
+    // Allow empty thinking_start so the UI can show a live thinking block immediately.
+    if (!delta && kind !== "thinking") {
       return;
     }
     this.updateAssistant((parts) => {
       const last = parts[parts.length - 1];
       if (last && last.kind === kind) {
+        if (!delta) {
+          return parts;
+        }
         parts[parts.length - 1] = { ...last, text: last.text + delta };
         return parts;
       }
-      parts.push({ kind, text: delta });
+      parts.push({ kind, text: delta || "" });
       return parts;
     });
   }
@@ -403,6 +433,7 @@ export class SessionManager {
         }
         this.currentAssistantId = undefined;
         this.setStatus({ state: "ready", detail: "Ready" });
+        void this.refreshSessionState();
         break;
       case "prompt_error":
       case "error": {
@@ -427,6 +458,10 @@ export class SessionManager {
   private handleAssistantEvent(ev: Record<string, unknown>): void {
     const type = String(ev.type ?? "");
     switch (type) {
+      case "thinking_start":
+        // Create an empty thinking part immediately so the UI can open/stream.
+        this.appendText("thinking", "");
+        break;
       case "text_delta":
         this.appendText("text", String(ev.delta ?? ""));
         break;
@@ -465,6 +500,56 @@ export class SessionManager {
       }
       default:
         break;
+    }
+  }
+
+  private parseContextUsage(raw: unknown, fallbackWindow?: number): ContextUsage | null {
+    if (!raw || typeof raw !== "object") {
+      if (fallbackWindow && fallbackWindow > 0) {
+        return { tokens: 0, contextWindow: fallbackWindow, percent: 0 };
+      }
+      return null;
+    }
+    const obj = raw as Record<string, unknown>;
+    const tokens = Number(obj.tokens ?? obj.used ?? obj.totalTokens ?? 0);
+    const contextWindow = Number(obj.contextWindow ?? obj.window ?? fallbackWindow ?? 0);
+    let percent = Number(obj.percent ?? obj.percentage ?? NaN);
+    if (!Number.isFinite(percent)) {
+      percent = contextWindow > 0 ? (tokens / contextWindow) * 100 : 0;
+    }
+    // omp reports percent already on a 0-100 scale (e.g. 0.0085).
+    return {
+      tokens: Number.isFinite(tokens) ? tokens : 0,
+      contextWindow: Number.isFinite(contextWindow) ? contextWindow : 0,
+      percent: Number.isFinite(percent) ? percent : 0,
+    };
+  }
+
+  async refreshSessionState(): Promise<void> {
+    if (!this.client?.isReady) {
+      return;
+    }
+    try {
+      const state = await this.client.getState();
+      const modelRaw = state.model;
+      if (modelRaw && typeof modelRaw === "object") {
+        const m = modelRaw as Record<string, unknown>;
+        this.sessionModel = {
+          id: String(m.id ?? m.selector ?? ""),
+          name: String(m.name ?? m.id ?? "Model"),
+          provider: m.provider ? String(m.provider) : undefined,
+          contextWindow: typeof m.contextWindow === "number" ? m.contextWindow : undefined,
+        };
+      }
+      const fallbackWindow =
+        this.sessionModel?.contextWindow ??
+        (typeof (modelRaw as { contextWindow?: number } | undefined)?.contextWindow === "number"
+          ? (modelRaw as { contextWindow: number }).contextWindow
+          : undefined);
+      this.contextUsage = this.parseContextUsage(state.contextUsage, fallbackWindow);
+      this.notify();
+    } catch {
+      // Non-fatal: UI can keep the last known usage.
     }
   }
 

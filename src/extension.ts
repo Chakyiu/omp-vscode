@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { ChatViewProvider } from "./chat/chatViewProvider";
-import { SessionManager } from "./omp/sessionManager";
+import { TabManager } from "./omp/tabManager";
 
 function workspaceCwd(): string {
   const folder = vscode.workspace.workspaceFolders?.[0];
@@ -8,7 +8,7 @@ function workspaceCwd(): string {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
-  const sessions = new SessionManager(workspaceCwd);
+  const sessions = new TabManager(workspaceCwd);
   const provider = new ChatViewProvider(
     context.extensionUri,
     sessions,

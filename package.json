@@ -90,7 +90,7 @@
       },
       {
         "command": "ompChat.attachMenu",
-        "title": "Oh My Pi: Attach\u2026",
+        "title": "Oh My Pi: Attach…",
         "icon": "$(attach)"
       },
       {
@@ -198,6 +198,21 @@
           "default": [],
           "description": "Extra CLI args appended when spawning omp --mode rpc."
         },
+        "ompChat.mode": {
+          "type": "string",
+          "enum": [
+            "Agent",
+            "Ask",
+            "Plan"
+          ],
+          "default": "Agent",
+          "description": "Chat mode shown in the Cursor-style composer."
+        },
+        "ompChat.displayName": {
+          "type": "string",
+          "default": "",
+          "description": "Optional name used in the greeting (e.g. How can I help you, Alex?)."
+        },
         "ompChat.showThinking": {
           "type": "boolean",
           "default": true,
@@ -225,9 +240,13 @@
     "watch": "node esbuild.mjs --watch",
     "compile": "tsc -p tsconfig.json --noEmit",
     "package": "vsce package --no-dependencies --allow-missing-repository",
-    "lint": "tsc -p tsconfig.json --noEmit"
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "format:check": "biome format ."
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.5",
     "@types/node": "^22.13.10",
     "@types/vscode": "^1.90.0",
     "@vscode/vsce": "^3.3.2",

@@ -12,10 +12,18 @@ export interface OmpRpcClientEvents {
   error: [Error];
 }
 
+interface PendingRequest {
+  resolve: (event: OmpRpcEvent) => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 export class OmpRpcClient extends EventEmitter {
   private proc: ChildProcessWithoutNullStreams | undefined;
   private started = false;
   private ready = false;
+  private nextRequestId = 1;
+  private readonly pending = new Map<number, PendingRequest>();
 
   constructor(private readonly options: OmpClientOptions) {
     super();
@@ -67,6 +75,11 @@ export class OmpRpcClient extends EventEmitter {
 
     this.proc.on("exit", (code) => {
       this.ready = false;
+      for (const [id, pending] of this.pending) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error(`omp exited (code ${code ?? "null"})`));
+        this.pending.delete(id);
+      }
       this.emit("exit", code);
     });
 
@@ -87,6 +100,16 @@ export class OmpRpcClient extends EventEmitter {
       if (event.type === "ready") {
         this.ready = true;
         this.emit("ready");
+      }
+
+      if (event.type === "response" && event.id != null) {
+        const id = Number(event.id);
+        const pending = this.pending.get(id);
+        if (pending) {
+          clearTimeout(pending.timer);
+          this.pending.delete(id);
+          pending.resolve(event);
+        }
       }
 
       if (event.type === "message_update") {
@@ -152,6 +175,35 @@ export class OmpRpcClient extends EventEmitter {
       throw new Error("omp RPC process is not running");
     }
     this.proc.stdin.write(`${JSON.stringify(command)}\n`);
+  }
+
+  request(command: Record<string, unknown>, timeoutMs = 10_000): Promise<OmpRpcEvent> {
+    if (!this.proc?.stdin.writable) {
+      return Promise.reject(new Error("omp RPC process is not running"));
+    }
+    const id = this.nextRequestId++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Timed out waiting for ${String(command.type)} response`));
+      }, timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      try {
+        this.send({ ...command, id });
+      } catch (err) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+  }
+
+  async getState(): Promise<Record<string, unknown>> {
+    const response = await this.request({ type: "get_state" });
+    if (response.success === false) {
+      throw new Error(String(response.error ?? "get_state failed"));
+    }
+    return (response.data as Record<string, unknown>) ?? {};
   }
 
   prompt(message: string): void {
