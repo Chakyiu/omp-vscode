@@ -1,12 +1,80 @@
 import { randomUUID } from "crypto";
 import type { ChatMessage, MessagePart, ToolCallPart } from "./types";
 
+const TOOL_PATH_KEYS = [
+  "path",
+  "file_path",
+  "filePath",
+  "filepath",
+  "file",
+  "target_notebook",
+  "target",
+  "entry",
+  "name",
+] as const;
+
+function asToolInputObject(value: unknown): Record<string, unknown> | undefined {
+  if (!value) {
+    return undefined;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      return undefined;
+    }
+    return undefined;
+  }
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return undefined;
+}
+
+function extractHashlinePath(text: string): string | undefined {
+  const match = String(text || "").match(/\[\s*([^\]\n#]+?)\s*#[0-9A-Fa-f]{4,}\s*\]/);
+  const value = match?.[1]?.trim().replace(/^['"]|['"]$/g, "");
+  return value || undefined;
+}
+
+function pickToolPath(obj: Record<string, unknown>): string | undefined {
+  for (const key of TOOL_PATH_KEYS) {
+    const value = obj[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  for (const key of ["input", "_input", "patch"] as const) {
+    const nested = obj[key];
+    if (typeof nested === "string" && nested.trim()) {
+      const fromHashline = extractHashlinePath(nested);
+      if (fromHashline) {
+        return fromHashline;
+      }
+    }
+  }
+  if (Array.isArray(obj.paths)) {
+    for (const item of obj.paths) {
+      if (typeof item === "string" && item.trim()) {
+        return item.trim();
+      }
+    }
+  }
+  return undefined;
+}
+
 function compactToolInput(value: unknown): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+  const obj = asToolInputObject(value);
+  if (!obj) {
     return value;
   }
-  const obj = value as Record<string, unknown>;
-  const pathKeys = ["path", "file", "target_notebook", "target", "entry", "name"] as const;
   const bulkyKeys = new Set([
     "contents",
     "content",
@@ -16,16 +84,19 @@ function compactToolInput(value: unknown): unknown {
     "code",
     "prompt",
     "message",
+    "input",
+    "_input",
+    "patch",
   ]);
-  const hasPath = pathKeys.some((key) => typeof obj[key] === "string" && String(obj[key]).trim());
+  const pathValue = pickToolPath(obj);
   const hasBulky = Object.keys(obj).some(
     (key) => bulkyKeys.has(key) && typeof obj[key] === "string" && String(obj[key]).length > 80,
   );
-  if (!hasPath || !hasBulky) {
-    return value;
+  if (!pathValue || !hasBulky) {
+    return obj;
   }
-  const slim: Record<string, unknown> = {};
-  for (const key of pathKeys) {
+  const slim: Record<string, unknown> = { path: pathValue };
+  for (const key of TOOL_PATH_KEYS) {
     if (typeof obj[key] === "string" && String(obj[key]).trim()) {
       slim[key] = obj[key];
     }
@@ -35,7 +106,12 @@ function compactToolInput(value: unknown): unknown {
       continue;
     }
     if (typeof raw === "string" && bulkyKeys.has(key)) {
-      slim[key] = raw.length > 80 ? `${raw.slice(0, 80)}…` : raw;
+      // Keep a tiny hashline prefix so path recovery still works if needed.
+      if ((key === "input" || key === "_input" || key === "patch") && extractHashlinePath(raw)) {
+        slim[key] = raw.length > 120 ? `${raw.slice(0, 120)}…` : raw;
+      } else {
+        slim[key] = raw.length > 80 ? `${raw.slice(0, 80)}…` : raw;
+      }
       continue;
     }
     if (typeof raw === "string" && raw.length > 160) {

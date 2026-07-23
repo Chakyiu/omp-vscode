@@ -386,6 +386,8 @@
       edit: "Edited",
       strreplace: "Edited",
       search_replace: "Edited",
+      apply_patch: "Edited",
+      hashline: "Edited",
       delete: "Deleted",
       delete_file: "Deleted",
       web_search: "Searched web",
@@ -457,13 +459,25 @@
     return null;
   }
 
+  var TOOL_PATH_KEYS = [
+    "path",
+    "file_path",
+    "filePath",
+    "filepath",
+    "file",
+    "target_notebook",
+    "target",
+    "entry",
+    "name",
+  ];
+
   function isFilePathTool(name) {
     const key = normalizeToolKey(name);
     const identity = parseToolIdentity(name);
     const actionKey = identity.action || identity.leaf || key;
     return (
-      /^(read|write|edit|delete|get_file|write_file|delete_file|strreplace|search_replace|create_artifact)$/.test(actionKey) ||
-      /^(read|write|edit|delete|strreplace|search_replace)$/.test(key)
+      /^(read|write|edit|delete|get_file|write_file|delete_file|strreplace|search_replace|create_artifact|apply_patch|hashline)$/.test(actionKey) ||
+      /^(read|write|edit|delete|strreplace|search_replace|apply_patch|hashline)$/.test(key)
     );
   }
 
@@ -475,32 +489,83 @@
     }
   }
 
-  function extractToolFilePath(name, inputPreview) {
-    if (!isFilePathTool(name)) return "";
-    const obj = parseToolInput(inputPreview);
-    if (obj) {
-      const keys = ["path", "file", "target_notebook", "target", "entry", "name"];
-      for (let i = 0; i < keys.length; i += 1) {
-        const value = obj[keys[i]];
-        if (typeof value === "string" && value.trim()) return value.trim();
+  function normalizeToolFilePath(pathValue) {
+    let value = String(pathValue || "").trim();
+    if (!value) return "";
+    if (value.indexOf("file://") === 0) {
+      try {
+        value = decodeURIComponent(value.slice("file://".length));
+      } catch (_) {
+        value = value.slice("file://".length);
+      }
+      if (/^\/[A-Za-z]:/.test(value)) value = value.slice(1);
+    }
+    return value.trim();
+  }
+
+  function extractHashlinePath(text) {
+    const src = String(text || "");
+    // omp hashline sections look like: [relative/path.ts#A1B2]
+    const match = src.match(/\[\s*([^\]\n#]+?)\s*#[0-9A-Fa-f]{4,}\s*\]/);
+    if (!match || !match[1]) return "";
+    return match[1].trim().replace(/^["']|["']$/g, "");
+  }
+
+  function pickToolPathFromObject(obj) {
+    if (!obj || typeof obj !== "object") return "";
+    for (let i = 0; i < TOOL_PATH_KEYS.length; i += 1) {
+      const value = obj[TOOL_PATH_KEYS[i]];
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
+    // hashline / apply_patch often bury the path inside input text
+    const nestedKeys = ["input", "_input", "patch", "diff"];
+    for (let i = 0; i < nestedKeys.length; i += 1) {
+      const nested = obj[nestedKeys[i]];
+      if (typeof nested === "string" && nested.trim()) {
+        const fromHashline = extractHashlinePath(nested);
+        if (fromHashline) return fromHashline;
       }
     }
+    if (Array.isArray(obj.paths)) {
+      for (let i = 0; i < obj.paths.length; i += 1) {
+        if (typeof obj.paths[i] === "string" && obj.paths[i].trim()) {
+          return obj.paths[i].trim();
+        }
+      }
+    }
+    if (Array.isArray(obj.edits)) {
+      for (let i = 0; i < obj.edits.length; i += 1) {
+        const edit = obj.edits[i];
+        if (edit && typeof edit === "object") {
+          const nested = pickToolPathFromObject(edit);
+          if (nested) return nested;
+        }
+      }
+    }
+    return "";
+  }
+
+  function extractToolFilePath(name, previewText) {
+    if (!isFilePathTool(name)) return "";
+    const obj = parseToolInput(previewText);
+    if (obj) {
+      const fromObj = pickToolPathFromObject(obj);
+      if (fromObj) return normalizeToolFilePath(fromObj);
+    }
     // Recover path from truncated JSON previews (common for write/edit payloads).
-    const text = String(inputPreview || "");
-    const match = text.match(/"(?:path|file|target_notebook|target|entry)"\s*:\s*"((?:\\.|[^"\\])*)"/);
-    if (match && match[1]) return unescapeJsonString(match[1]).trim();
+    const text = String(previewText || "");
+    const match = text.match(/"(?:path|file_path|filePath|filepath|file|target_notebook|target|entry)"\s*:\s*"((?:\\.|[^"\\])*)"/);
+    if (match && match[1]) return normalizeToolFilePath(unescapeJsonString(match[1]));
     const nameMatch = text.match(/"name"\s*:\s*"((?:\\.|[^"\\])*(?:\/|\\)(?:\\.|[^"\\])*)"/);
-    if (nameMatch && nameMatch[1]) return unescapeJsonString(nameMatch[1]).trim();
+    if (nameMatch && nameMatch[1]) return normalizeToolFilePath(unescapeJsonString(nameMatch[1]));
+    const fromHashline = extractHashlinePath(text);
+    if (fromHashline) return normalizeToolFilePath(fromHashline);
     return "";
   }
 
   function formatToolFilePath(pathValue) {
-    let value = String(pathValue || "").trim();
+    const value = normalizeToolFilePath(pathValue);
     if (!value) return "";
-    if (value.indexOf("file://") === 0) {
-      value = value.slice("file://".length);
-      if (/^\/[A-Za-z]:/.test(value)) value = value.slice(1);
-    }
     const display = value.replace(/\\/g, "/");
     const parts = display.split("/").filter(Boolean);
     if (parts.length <= 3) return parts.join("/") || display;
@@ -508,7 +573,7 @@
   }
 
   function renderFileLink(pathValue) {
-    const full = String(pathValue || "").trim();
+    const full = normalizeToolFilePath(pathValue);
     if (!full) return "";
     const display = formatToolFilePath(full);
     return (
@@ -545,10 +610,11 @@
     } else if (actionKey === "glob" || key === "glob") {
       value = pick("path", "glob_pattern", "pattern");
     } else if (
-      /^(read|write|edit|delete|get_file|write_file|delete_file|strreplace|search_replace)$/.test(actionKey) ||
-      /^(read|write|edit|delete|strreplace|search_replace)$/.test(key)
+      /^(read|write|edit|delete|get_file|write_file|delete_file|strreplace|search_replace|apply_patch|hashline)$/.test(actionKey) ||
+      /^(read|write|edit|delete|strreplace|search_replace|apply_patch|hashline)$/.test(key)
     ) {
-      value = pick("path", "file", "target_notebook", "target", "entry", "name");
+      value = pick("path", "file_path", "filePath", "filepath", "file", "target_notebook", "target", "entry", "name");
+      if (!value) value = extractHashlinePath(pick("input", "_input", "patch") || "");
       if (value) value = formatToolFilePath(value);
     } else if (/navigate|screenshot|snapshot|click|fill|type|scroll|wait/.test(actionKey)) {
       value = pick("url", "uri", "selector", "ref", "text", "query", "i", "name", "path");
@@ -613,7 +679,9 @@
       const openAttr = collapseOpenAttr(collapseId, running);
       const liveClass = running ? " live" : "";
       const title = toolTitle(part.name, part.inputPreview);
-      const filePath = extractToolFilePath(part.name, part.inputPreview);
+      const filePath =
+        extractToolFilePath(part.name, part.inputPreview) ||
+        extractToolFilePath(part.name, part.outputPreview);
       const summary = filePath ? "" : toolSummary(part.name, part.inputPreview);
       const summaryHtml = filePath
         ? '<span class="collapse-meta">' + renderFileLink(filePath) + '</span>'
@@ -1277,15 +1345,22 @@
     inputEl.focus();
   });
 
-  messagesEl.addEventListener("click", function (e) {
+  function openFileFromEvent(e) {
     const fileBtn = e.target.closest("button[data-action='open-file']");
-    if (fileBtn && messagesEl.contains(fileBtn)) {
-      e.preventDefault();
-      e.stopPropagation();
-      const filePath = fileBtn.getAttribute("data-path") || "";
-      if (filePath) vscode.postMessage({ type: "openFile", path: filePath });
-      return;
-    }
+    if (!fileBtn || !messagesEl.contains(fileBtn)) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    const filePath = fileBtn.getAttribute("data-path") || "";
+    if (filePath) vscode.postMessage({ type: "openFile", path: filePath });
+    return true;
+  }
+
+  messagesEl.addEventListener("click", function (e) {
+    if (openFileFromEvent(e)) return;
+  }, true);
+
+  messagesEl.addEventListener("click", function (e) {
+    if (openFileFromEvent(e)) return;
 
     const link = e.target.closest("a[data-href], a[href]");
     if (link && messagesEl.contains(link)) {

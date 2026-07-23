@@ -221,6 +221,97 @@ export class OmpRpcClient extends EventEmitter {
     this.send({ type: "prompt", message });
   }
 
+  /**
+   * Wait until the agent turn finishes (`agent_end` / `turn_end`), or a
+   * local-only prompt completes without invoking the agent.
+   */
+  waitForIdle(timeoutMs = 60_000): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        fn();
+      };
+
+      const onEvent = (event: OmpRpcEvent) => {
+        const type = String(event.type ?? "");
+        if (type === "agent_end" || type === "turn_end") {
+          finish(() => resolve());
+          return;
+        }
+        if (type === "prompt_result" && event.agentInvoked === false) {
+          finish(() => resolve());
+          return;
+        }
+        if (type === "response" && event.command === "prompt") {
+          if (event.success === false) {
+            finish(() => reject(new Error(String(event.error ?? "prompt failed"))));
+            return;
+          }
+          const data = (event.data as Record<string, unknown> | undefined) ?? {};
+          if (data.agentInvoked === false) {
+            finish(() => resolve());
+          }
+          return;
+        }
+        if (type === "prompt_error") {
+          finish(() =>
+            reject(new Error(String(event.error ?? event.message ?? "prompt error"))),
+          );
+        }
+      };
+
+      const onExit = (code: number | null) => {
+        finish(() => reject(new Error(`omp exited while waiting (code ${code ?? "null"})`)));
+      };
+
+      const onError = (err: Error) => {
+        finish(() => reject(err));
+      };
+
+      const timer = setTimeout(() => {
+        finish(() => reject(new Error("Timed out waiting for omp agent to become idle")));
+      }, timeoutMs);
+
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.off("event", onEvent);
+        this.off("exit", onExit);
+        this.off("error", onError);
+      };
+
+      this.on("event", onEvent);
+      this.on("exit", onExit);
+      this.on("error", onError);
+    });
+  }
+
+  /** Send a prompt and wait for the agent turn to complete. */
+  async promptAndWait(message: string, timeoutMs = 60_000): Promise<void> {
+    const idle = this.waitForIdle(timeoutMs);
+    this.prompt(message);
+    await idle;
+  }
+
+  async getLastAssistantText(): Promise<string | null> {
+    const response = await this.request({ type: "get_last_assistant_text" });
+    if (response.success === false) {
+      throw new Error(String(response.error ?? "get_last_assistant_text failed"));
+    }
+    const data = (response.data as Record<string, unknown> | undefined) ?? {};
+    if (typeof data.text === "string") {
+      return data.text;
+    }
+    if (typeof response.data === "string") {
+      return response.data;
+    }
+    return null;
+  }
+
   abort(): void {
     try {
       this.send({ type: "abort" });

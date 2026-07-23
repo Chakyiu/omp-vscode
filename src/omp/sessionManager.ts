@@ -14,12 +14,80 @@ import type {
   ToolCallPart,
 } from "./types";
 
+const TOOL_PATH_KEYS = [
+  "path",
+  "file_path",
+  "filePath",
+  "filepath",
+  "file",
+  "target_notebook",
+  "target",
+  "entry",
+  "name",
+] as const;
+
+function asToolInputObject(value: unknown): Record<string, unknown> | undefined {
+  if (!value) {
+    return undefined;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      return undefined;
+    }
+    return undefined;
+  }
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return undefined;
+}
+
+function extractHashlinePath(text: string): string | undefined {
+  const match = String(text || "").match(/\[\s*([^\]\n#]+?)\s*#[0-9A-Fa-f]{4,}\s*\]/);
+  const value = match?.[1]?.trim().replace(/^['"]|['"]$/g, "");
+  return value || undefined;
+}
+
+function pickToolPath(obj: Record<string, unknown>): string | undefined {
+  for (const key of TOOL_PATH_KEYS) {
+    const value = obj[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  for (const key of ["input", "_input", "patch"] as const) {
+    const nested = obj[key];
+    if (typeof nested === "string" && nested.trim()) {
+      const fromHashline = extractHashlinePath(nested);
+      if (fromHashline) {
+        return fromHashline;
+      }
+    }
+  }
+  if (Array.isArray(obj.paths)) {
+    for (const item of obj.paths) {
+      if (typeof item === "string" && item.trim()) {
+        return item.trim();
+      }
+    }
+  }
+  return undefined;
+}
+
 function compactToolInput(value: unknown): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+  const obj = asToolInputObject(value);
+  if (!obj) {
     return value;
   }
-  const obj = value as Record<string, unknown>;
-  const pathKeys = ["path", "file", "target_notebook", "target", "entry", "name"] as const;
   const bulkyKeys = new Set([
     "contents",
     "content",
@@ -29,16 +97,19 @@ function compactToolInput(value: unknown): unknown {
     "code",
     "prompt",
     "message",
+    "input",
+    "_input",
+    "patch",
   ]);
-  const hasPath = pathKeys.some((key) => typeof obj[key] === "string" && String(obj[key]).trim());
+  const pathValue = pickToolPath(obj);
   const hasBulky = Object.keys(obj).some(
     (key) => bulkyKeys.has(key) && typeof obj[key] === "string" && String(obj[key]).length > 80,
   );
-  if (!hasPath || !hasBulky) {
-    return value;
+  if (!pathValue || !hasBulky) {
+    return obj;
   }
-  const slim: Record<string, unknown> = {};
-  for (const key of pathKeys) {
+  const slim: Record<string, unknown> = { path: pathValue };
+  for (const key of TOOL_PATH_KEYS) {
     if (typeof obj[key] === "string" && String(obj[key]).trim()) {
       slim[key] = obj[key];
     }
@@ -48,7 +119,12 @@ function compactToolInput(value: unknown): unknown {
       continue;
     }
     if (typeof raw === "string" && bulkyKeys.has(key)) {
-      slim[key] = raw.length > 80 ? `${raw.slice(0, 80)}…` : raw;
+      // Keep a tiny hashline prefix so path recovery still works if needed.
+      if ((key === "input" || key === "_input" || key === "patch") && extractHashlinePath(raw)) {
+        slim[key] = raw.length > 120 ? `${raw.slice(0, 120)}…` : raw;
+      } else {
+        slim[key] = raw.length > 80 ? `${raw.slice(0, 80)}…` : raw;
+      }
       continue;
     }
     if (typeof raw === "string" && raw.length > 160) {
@@ -311,6 +387,86 @@ export class SessionManager {
     this.client.prompt(composed);
   }
 
+  /**
+   * Send a prompt and wait for the turn to finish, returning the assistant text.
+   * Unlike {@link send}, this resolves only after the session is idle again.
+   */
+  async query(text: string, timeoutMs = 600_000): Promise<string> {
+    const trimmed = text.trim();
+    if (!trimmed && this.attachments.length === 0) {
+      return this.getLastAssistantText();
+    }
+
+    const turn = this.waitForTurn(timeoutMs);
+    await this.send(text);
+    await turn;
+
+    const local = this.getLastAssistantText();
+    if (local) {
+      return local;
+    }
+
+    try {
+      return (await this.client?.getLastAssistantText()) ?? "";
+    } catch {
+      return "";
+    }
+  }
+
+  /** Visible text from the most recent assistant message in this session. */
+  getLastAssistantText(): string {
+    for (let i = this.messages.length - 1; i >= 0; i -= 1) {
+      const message = this.messages[i];
+      if (message.role !== "assistant") {
+        continue;
+      }
+      return message.parts
+        .filter((part): part is Extract<MessagePart, { kind: "text" }> => part.kind === "text")
+        .map((part) => part.text)
+        .join("");
+    }
+    return "";
+  }
+
+  private waitForTurn(timeoutMs: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let seenBusy = this.status.state === "busy";
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        subscription.dispose();
+        clearTimeout(timer);
+        fn();
+      };
+
+      const subscription = this.onDidChange(() => {
+        if (this.status.state === "busy") {
+          seenBusy = true;
+          return;
+        }
+        if (!seenBusy) {
+          return;
+        }
+        if (this.status.state === "ready") {
+          finish(() => resolve());
+          return;
+        }
+        if (this.status.state === "error" || this.status.state === "stopped") {
+          finish(() =>
+            reject(new Error(this.status.detail || `Session ${this.status.state}`)),
+          );
+        }
+      });
+
+      const timer = setTimeout(() => {
+        finish(() => reject(new Error("Timed out waiting for session response")));
+      }, timeoutMs);
+    });
+  }
+
   abort(): void {
     this.client?.abort();
     if (this.currentAssistantId) {
@@ -543,6 +699,39 @@ export class SessionManager {
           status: failed ? "error" : "done",
           outputPreview: preview(event.result ?? event.output ?? event.error),
         });
+        break;
+      }
+      case "prompt_result": {
+        if (event.agentInvoked === false && this.status.state === "busy") {
+          this.currentAssistantId = undefined;
+          this.setStatus({ state: "ready", detail: "Ready" });
+        }
+        break;
+      }
+      case "response": {
+        if (event.command === "prompt" && event.success === false) {
+          const message = String(event.error ?? "prompt failed");
+          this.messages = [
+            ...this.messages,
+            {
+              id: randomUUID(),
+              role: "system",
+              createdAt: Date.now(),
+              parts: [{ kind: "text", text: message }],
+            },
+          ];
+          this.setStatus({ state: "error", detail: message });
+          break;
+        }
+        if (
+          event.command === "prompt" &&
+          event.success !== false &&
+          (event.data as Record<string, unknown> | undefined)?.agentInvoked === false &&
+          this.status.state === "busy"
+        ) {
+          this.currentAssistantId = undefined;
+          this.setStatus({ state: "ready", detail: "Ready" });
+        }
         break;
       }
       case "turn_end":

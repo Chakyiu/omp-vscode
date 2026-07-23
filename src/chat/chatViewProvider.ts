@@ -246,7 +246,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           vscode.window.showWarningMessage(`Could not open ${msg.path}`);
           break;
         }
-        await vscode.window.showTextDocument(uri);
+        try {
+          await vscode.window.showTextDocument(uri, { preview: false });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          vscode.window.showWarningMessage(`Could not open ${msg.path}: ${message}`);
+        }
         break;
       }
       default:
@@ -254,19 +259,42 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private resolveWorkspaceUri(pathValue: string): vscode.Uri | undefined {
-    if (!pathValue) {
+    private resolveWorkspaceUri(pathValue: string): vscode.Uri | undefined {
+    let value = String(pathValue || "").trim();
+    if (!value) {
       return undefined;
     }
-    if (pathValue.startsWith("/") || /^[A-Za-z]:\\/.test(pathValue)) {
-      return vscode.Uri.file(pathValue);
+    if (value.startsWith("file://")) {
+      try {
+        return vscode.Uri.parse(value);
+      } catch {
+        value = value.slice("file://".length);
+        try {
+          value = decodeURIComponent(value);
+        } catch {
+          // keep sliced value
+        }
+        if (/^\/[A-Za-z]:/.test(value)) {
+          value = value.slice(1);
+        }
+      }
+    }
+    if (value.startsWith("~/")) {
+      const home = process.env.HOME || process.env.USERPROFILE;
+      if (home) {
+        value = `${home}/${value.slice(2)}`;
+      }
+    }
+    if (value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value)) {
+      return vscode.Uri.file(value);
     }
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) {
       return undefined;
     }
-    return vscode.Uri.joinPath(folder.uri, pathValue);
+    return vscode.Uri.joinPath(folder.uri, value);
   }
+
 
   private currentModelLabel(): string {
     return this.sessions.getModelLabel();
@@ -362,8 +390,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     <section id="empty" class="empty visible">
       <div class="greeting">
         <svg class="sparkle" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path d="M12 2l1.2 6.3L19 10l-5.8 1.7L12 18l-1.2-6.3L5 10l5.8-1.7L12 2z" fill="currentColor" opacity="0.95"/>
-          <path d="M19 14l.6 2.4L22 17l-2.4.6L19 20l-.6-2.4L16 17l2.4-.6L19 14z" fill="currentColor" opacity="0.75"/>
+          <path d="M6.5 8.25h11M9 8.25V16.4c0 .75-.3 1.15-.95 1.15-.3 0-.58-.08-.82-.22M15 8.25V16.4c0 .75.3 1.15.95 1.15.3 0 .58-.08.82-.22" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
         <h1 id="greetingTitle">How can I help you?</h1>
       </div>

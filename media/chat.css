@@ -197,6 +197,10 @@ button {
 .tool > .collapse-summary .collapse-meta .file-link {
   color: var(--vscode-textLink-foreground, #4ea1ff);
 }
+.tool > .collapse-summary:hover .collapse-meta .file-link {
+  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground, #4ea1ff));
+  text-decoration: underline;
+}
 .collapse-body {
   margin: 4px 0 6px 18px;
   padding: 8px 10px;
