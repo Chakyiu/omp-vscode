@@ -7,7 +7,7 @@
     "url": "https://github.com/Chakyiu/omp-vscode"
   },
   "version": "0.1.0",
-  "publisher": "local",
+  "publisher": "ChakyiuLI",
   "license": "MIT",
   "engines": {
     "vscode": "^1.90.0"
