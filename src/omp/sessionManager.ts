@@ -1,191 +1,23 @@
 import * as vscode from "vscode";
 import { randomUUID } from "crypto";
 import { OmpRpcClient } from "./rpcClient";
-import { chatMessagesFromOmp } from "./sessionHistory";
+import { chatMessagesFromOmp, messagesFromSessionFile } from "./sessionHistory";
 import { logToolFileTouch } from "./toolFileLog";
+import { collectToolFileRefs, collectToolPaths, preview } from "./toolPaths";
 import type {
   Attachment,
   ChatMessage,
   ContextUsage,
-  MessagePart,
+  MessagePart, TextPart,
   OmpClientOptions,
   OmpRpcEvent,
   SessionModelInfo,
   SessionStatus,
   ToolCallPart,
+  ToolFileRef,
   UiQuestion,
   UiQuestionMethod,
 } from "./types";
-
-const TOOL_PATH_KEYS = [
-  "path",
-  "file_path",
-  "filePath",
-  "filepath",
-  "file",
-  "target_notebook",
-  "target",
-  "entry",
-  "name",
-] as const;
-
-function asToolInputObject(value: unknown): Record<string, unknown> | undefined {
-  if (!value) {
-    return undefined;
-  }
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return undefined;
-    }
-    try {
-      const parsed: unknown = JSON.parse(trimmed);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        return parsed as Record<string, unknown>;
-      }
-    } catch {
-      return undefined;
-    }
-    return undefined;
-  }
-  if (typeof value === "object" && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-  return undefined;
-}
-
-function extractHashlinePaths(text: string): string[] {
-  const out: string[] = [];
-  const re = /\[\s*([^\]\n#]+?)\s*#[0-9A-Fa-f]{4,}\s*\]/g;
-  const src = String(text || "");
-  let match: RegExpExecArray | null = re.exec(src);
-  while (match) {
-    const value = match[1]?.trim().replace(/^['"]|['"]$/g, "");
-    if (value) {
-      out.push(value);
-    }
-    match = re.exec(src);
-  }
-  return out;
-}
-
-function extractHashlinePath(text: string): string | undefined {
-  return extractHashlinePaths(text)[0];
-}
-
-function collectToolPaths(value: unknown): string[] {
-  const paths: string[] = [];
-  const push = (raw: unknown) => {
-    if (typeof raw !== "string") {
-      return;
-    }
-    const trimmed = raw.trim();
-    if (!trimmed) {
-      return;
-    }
-    paths.push(trimmed);
-    for (const nested of extractHashlinePaths(trimmed)) {
-      paths.push(nested);
-    }
-  };
-
-  const obj = asToolInputObject(value);
-  if (!obj) {
-    if (typeof value === "string") {
-      push(value);
-    }
-    return [...new Set(paths)];
-  }
-
-  for (const key of TOOL_PATH_KEYS) {
-    push(obj[key]);
-  }
-  for (const key of ["input", "_input", "patch", "diff"] as const) {
-    push(obj[key]);
-  }
-  if (Array.isArray(obj.paths)) {
-    for (const item of obj.paths) {
-      push(item);
-    }
-  }
-  if (Array.isArray(obj.edits)) {
-    for (const edit of obj.edits) {
-      if (edit && typeof edit === "object") {
-        paths.push(...collectToolPaths(edit));
-      }
-    }
-  }
-  return [...new Set(paths)];
-}
-
-function pickToolPath(obj: Record<string, unknown>): string | undefined {
-  return collectToolPaths(obj)[0];
-}
-
-function compactToolInput(value: unknown): unknown {
-  const obj = asToolInputObject(value);
-  if (!obj) {
-    return value;
-  }
-  const bulkyKeys = new Set([
-    "contents",
-    "content",
-    "new_string",
-    "old_string",
-    "text",
-    "code",
-    "prompt",
-    "message",
-    "input",
-    "_input",
-    "patch",
-  ]);
-  const pathValue = pickToolPath(obj);
-  const hasBulky = Object.keys(obj).some(
-    (key) => bulkyKeys.has(key) && typeof obj[key] === "string" && String(obj[key]).length > 80,
-  );
-  if (!pathValue || !hasBulky) {
-    return obj;
-  }
-  const slim: Record<string, unknown> = { path: pathValue };
-  for (const key of TOOL_PATH_KEYS) {
-    if (typeof obj[key] === "string" && String(obj[key]).trim()) {
-      slim[key] = obj[key];
-    }
-  }
-  for (const [key, raw] of Object.entries(obj)) {
-    if (key in slim) {
-      continue;
-    }
-    if (typeof raw === "string" && bulkyKeys.has(key)) {
-      // Keep a tiny hashline prefix so path recovery still works if needed.
-      if ((key === "input" || key === "_input" || key === "patch") && extractHashlinePath(raw)) {
-        slim[key] = raw.length > 120 ? `${raw.slice(0, 120)}…` : raw;
-      } else {
-        slim[key] = raw.length > 80 ? `${raw.slice(0, 80)}…` : raw;
-      }
-      continue;
-    }
-    if (typeof raw === "string" && raw.length > 160) {
-      slim[key] = `${raw.slice(0, 160)}…`;
-      continue;
-    }
-    slim[key] = raw;
-  }
-  return slim;
-}
-
-function preview(value: unknown, max = 400): string | undefined {
-  if (value == null) {
-    return undefined;
-  }
-  const compact = compactToolInput(value);
-  const text = typeof compact === "string" ? compact : JSON.stringify(compact, null, 2);
-  if (!text) {
-    return undefined;
-  }
-  return text.length > max ? `${text.slice(0, max)}…` : text;
-}
 
 export interface SessionIdStore {
   get(): string | undefined;
@@ -201,11 +33,15 @@ export class SessionManager {
   private contextUsage: ContextUsage | null = null;
   private sessionModel: SessionModelInfo | null = null;
   private sessionId: string | undefined;
+  private sessionFile: string | undefined;
   private restoringHistory = false;
   /** Prompts waiting for the current turn to finish before being sent. */
-  private pendingPrompts: Array<{ id: string; composed: string }> = [];
+  private pendingPrompts: Array<{ id: string; text: string; composed: string }> = [];
   /** Interactive omp extension UI questions waiting for a user answer. */
   private pendingUiQuestions: UiQuestion[] = [];
+  /** Wall-clock start for the currently open thinking block. */
+  private thinkingStartedAt: number | undefined;
+
   private uiQuestionTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChange = this._onDidChange.event;
@@ -300,6 +136,7 @@ export class SessionManager {
   async start(overrides?: Partial<OmpClientOptions>): Promise<void> {
     await this.disposeClient();
     this.pendingPrompts = [];
+    this.thinkingStartedAt = undefined;
     this.clearUiQuestions({ cancelRemote: false });
     this.setStatus({ state: "starting", detail: "Launching omp…" });
 
@@ -367,6 +204,7 @@ export class SessionManager {
     this.contextUsage = null;
     this.sessionModel = null;
     this.sessionId = undefined;
+    this.sessionFile = undefined;
     this.notify();
     // Always start a fresh session for New Chat.
     await this.start({ continueLastSession: false, resumeSessionId: undefined });
@@ -437,12 +275,131 @@ export class SessionManager {
     this.attachments = [];
 
     if (busy) {
-      this.pendingPrompts.push({ id: userMessage.id, composed });
+      this.pendingPrompts.push({ id: userMessage.id, text: trimmed, composed });
       this.notify();
       return;
     }
 
     this.dispatchPrompt(composed);
+  }
+
+  /** Pull a queued prompt back into the composer (removes it from the queue). */
+  recallQueued(id: string, textHint?: string): { text: string; attachments: Attachment[] } | undefined {
+    const recalled = this.takeQueued(id, textHint);
+    if (!recalled) {
+      return undefined;
+    }
+    // Restore any attachments that were queued with the prompt.
+    if (recalled.attachments.length) {
+      for (const att of recalled.attachments) {
+        this.attachments = [
+          ...this.attachments.filter((a) => {
+            if (att.id && a.id === att.id) return false;
+            if (att.fsPath && a.fsPath) return a.fsPath !== att.fsPath;
+            return true;
+          }),
+          {
+            id: att.id || randomUUID(),
+            kind: att.kind,
+            label: att.label,
+            fsPath: att.fsPath,
+            path: att.path,
+            language: att.language,
+            content: att.content,
+            mimeType: att.mimeType,
+            previewDataUrl: att.previewDataUrl,
+            size: att.size,
+          },
+        ];
+      }
+    }
+    this.notify();
+    return { text: recalled.text, attachments: recalled.attachments };
+  }
+
+  /** Discard a queued prompt without sending it. */
+  removeQueued(id: string, textHint?: string): boolean {
+    const removed = this.takeQueued(id, textHint);
+    if (!removed) {
+      return false;
+    }
+    this.notify();
+    return true;
+  }
+
+  private takeQueued(
+    id: string,
+    textHint?: string,
+  ): { text: string; attachments: Attachment[] } | undefined {
+    const rawId = String(id || "").trim();
+    const hint = String(textHint ?? "").trim();
+
+    let pendingIdx = rawId ? this.pendingPrompts.findIndex((item) => item.id === rawId) : -1;
+    let messageIdx = rawId
+      ? this.messages.findIndex(
+          (message) => message.id === rawId && (message.queued || pendingIdx >= 0),
+        )
+      : -1;
+
+    // Optimistic webview ids (local-*) won't match host UUIDs — fall back to
+    // the latest queued prompt, optionally matched by text.
+    if (pendingIdx < 0 && messageIdx < 0) {
+      if (hint) {
+        pendingIdx = [...this.pendingPrompts]
+          .map((item, idx) => ({ item, idx }))
+          .reverse()
+          .find((entry) => entry.item.text.trim() === hint)?.idx ?? -1;
+        messageIdx = [...this.messages]
+          .map((message, idx) => ({ message, idx }))
+          .reverse()
+          .find((entry) => {
+            if (!entry.message.queued) return false;
+            const text = entry.message.parts
+              .filter((part): part is TextPart => part.kind === "text")
+              .map((part) => part.text)
+              .join("\n")
+              .trim();
+            return text === hint;
+          })?.idx ?? -1;
+      }
+      if (pendingIdx < 0 && messageIdx < 0 && (rawId.startsWith("local-") || !rawId)) {
+        pendingIdx = this.pendingPrompts.length ? this.pendingPrompts.length - 1 : -1;
+        for (let i = this.messages.length - 1; i >= 0; i -= 1) {
+          if (this.messages[i]?.queued) {
+            messageIdx = i;
+            break;
+          }
+        }
+      }
+    }
+
+    if (pendingIdx < 0 && messageIdx < 0) {
+      return undefined;
+    }
+
+    const pending = pendingIdx >= 0 ? this.pendingPrompts[pendingIdx] : undefined;
+    const message = messageIdx >= 0 ? this.messages[messageIdx] : undefined;
+    const targetId = message?.id || pending?.id || rawId;
+    const textFromParts =
+      message?.parts
+        ?.filter((part): part is TextPart => part.kind === "text")
+        .map((part) => part.text)
+        .join("\n")
+        .trim() ?? "";
+    const text = textFromParts || pending?.text || hint || "";
+    const attachments = (message?.attachments ?? []).map((att) => ({ ...att }));
+
+    if (pending) {
+      this.pendingPrompts = this.pendingPrompts.filter((item) => item.id !== pending.id);
+    } else if (targetId) {
+      this.pendingPrompts = this.pendingPrompts.filter((item) => item.id !== targetId);
+    }
+    if (message) {
+      this.messages = this.messages.filter((item) => item.id !== message.id);
+    } else if (targetId) {
+      this.messages = this.messages.filter((item) => item.id !== targetId);
+    }
+    return { text, attachments };
   }
 
   abort(): void {
@@ -508,6 +465,61 @@ export class SessionManager {
     }
   }
 
+
+  private applyAssistantTimingMeta(raw: unknown): void {
+    if (!raw || typeof raw !== "object" || !this.currentAssistantId) {
+      return;
+    }
+    const message = raw as Record<string, unknown>;
+    const duration = Number(message.duration);
+    const ttft = Number(message.ttft);
+    const hasDuration = Number.isFinite(duration) && duration > 0;
+    const hasTtft = Number.isFinite(ttft) && ttft > 0;
+    if (!hasDuration && !hasTtft) {
+      return;
+    }
+    this.patchMessage(this.currentAssistantId, (msg) => {
+      let firstThinking = true;
+      const parts = msg.parts.map((part) => {
+        if (part.kind !== "thinking") {
+          return part;
+        }
+        const measured =
+          typeof part.durationMs === "number"
+            ? part.durationMs
+            : part.startedAt && part.endedAt
+              ? Math.max(0, part.endedAt - part.startedAt)
+              : 0;
+        // Providers often flush thinking in one burst, so Date.now()-based
+        // timing collapses to <1s. Prefer omp ttft for the first weak block.
+        // Once we already have a stable >=1s measurement, keep it so the
+        // "Thought for Xs" label does not jump after the turn settles.
+        let durationMs = measured;
+        if (measured < 1000 && firstThinking) {
+          if (hasTtft) {
+            durationMs = ttft;
+          } else if (hasDuration) {
+            durationMs = duration;
+          }
+        }
+        firstThinking = false;
+        if (typeof part.durationMs === "number" && part.durationMs >= 1000) {
+          durationMs = part.durationMs;
+        }
+        const startedAt = part.startedAt ?? (part.endedAt ? part.endedAt - durationMs : undefined);
+        const endedAt = part.endedAt ?? (startedAt != null ? startedAt + durationMs : Date.now());
+        return {
+          ...part,
+          streaming: false,
+          startedAt,
+          endedAt,
+          durationMs,
+        };
+      });
+      return { ...msg, parts };
+    });
+  }
+
   private markTurnComplete(): void {
     // Ignore duplicate settle attempts once we have already left the busy state.
     if (this.status.state !== "busy") {
@@ -516,16 +528,29 @@ export class SessionManager {
     if (this.currentAssistantId) {
       this.patchMessage(this.currentAssistantId, (msg) => {
         const parts = msg.parts.map((part) => {
+          if (part.kind === "tool" && part.status === "running") {
+            // Avoid leaving orphan spinners when omp skips/mismatches tool_execution_end.
+            return {
+              ...part,
+              status: "done" as const,
+            };
+          }
           if (part.kind !== "thinking") {
             return part;
           }
-          if (part.streaming === false && part.endedAt) {
+          if (part.streaming === false && (part.endedAt || part.durationMs)) {
             return part;
           }
+          const at = Date.now();
+          const startedAt = part.startedAt ?? this.thinkingStartedAt ?? at;
+          const endedAt = part.endedAt ?? at;
+          const measured = Math.max(0, endedAt - startedAt);
           return {
             ...part,
             streaming: false,
-            endedAt: part.endedAt ?? Date.now(),
+            startedAt,
+            endedAt,
+            durationMs: part.durationMs ?? (measured >= 1000 ? measured : part.durationMs),
           };
         });
         return {
@@ -535,6 +560,7 @@ export class SessionManager {
         };
       });
     }
+    this.thinkingStartedAt = undefined;
     this.currentAssistantId = undefined;
     if (this.pendingPrompts.length > 0) {
       this.flushQueuedPrompt();
@@ -627,25 +653,34 @@ export class SessionManager {
     }));
   }
 
-  private closeOpenThinking(parts: MessagePart[]): void {
+  private closeOpenThinking(parts: MessagePart[], at = Date.now()): void {
     for (let i = parts.length - 1; i >= 0; i -= 1) {
       const part = parts[i];
       if (part.kind !== "thinking") {
         continue;
       }
-      if (part.streaming === false && part.endedAt) {
+      if (part.streaming === false && (part.endedAt || part.durationMs)) {
         break;
       }
+      const startedAt = part.startedAt ?? this.thinkingStartedAt ?? at;
+      const endedAt = part.endedAt ?? at;
+      const measured = Math.max(0, endedAt - startedAt);
+      const durationMs =
+        part.durationMs ??
+        (measured >= 1000 ? measured : undefined);
       parts[i] = {
         ...part,
         streaming: false,
-        endedAt: part.endedAt ?? Date.now(),
+        startedAt,
+        endedAt,
+        durationMs,
       };
+      this.thinkingStartedAt = undefined;
       break;
     }
   }
 
-  private appendText(kind: "text" | "thinking", delta: string): void {
+  private appendText(kind: "text" | "thinking", delta: string, at = Date.now()): void {
     // Allow empty thinking_start so the UI can show a live thinking block immediately.
     if (!delta && kind !== "thinking") {
       return;
@@ -654,14 +689,27 @@ export class SessionManager {
       const last = parts[parts.length - 1];
       if (last && last.kind === kind) {
         if (!delta) {
+          // thinking_start while a thinking block is already open — keep original start.
+          if (last.kind === "thinking") {
+            this.thinkingStartedAt = this.thinkingStartedAt ?? last.startedAt ?? at;
+            if (last.startedAt == null) {
+              parts[parts.length - 1] = {
+                ...last,
+                streaming: true,
+                startedAt: at,
+              };
+            }
+          }
           return parts;
         }
         if (last.kind === "thinking") {
+          const startedAt = last.startedAt ?? this.thinkingStartedAt ?? at;
+          this.thinkingStartedAt = this.thinkingStartedAt ?? startedAt;
           parts[parts.length - 1] = {
             ...last,
             text: last.text + delta,
             streaming: true,
-            startedAt: last.startedAt ?? Date.now(),
+            startedAt,
           };
         } else {
           parts[parts.length - 1] = { ...last, text: last.text + delta };
@@ -669,14 +717,15 @@ export class SessionManager {
         return parts;
       }
       if (kind !== "thinking") {
-        this.closeOpenThinking(parts);
+        this.closeOpenThinking(parts, at);
       }
       if (kind === "thinking") {
+        this.thinkingStartedAt = at;
         parts.push({
           kind: "thinking",
           text: delta || "",
           streaming: true,
-          startedAt: Date.now(),
+          startedAt: at,
         });
       } else {
         parts.push({ kind: "text", text: delta || "" });
@@ -689,13 +738,17 @@ export class SessionManager {
     let nextName = partial.name ?? "tool";
     let nextStatus = partial.status ?? "running";
     let nextPaths = partial.filePaths ?? [];
+    let nextRefs = partial.fileRefs ?? [];
     this.updateAssistant((parts) => {
       const idx = parts.findIndex((p) => p.kind === "tool" && p.id === partial.id);
       if (idx >= 0) {
         const current = parts[idx] as ToolCallPart;
         nextName = partial.name ?? current.name;
         nextStatus = partial.status ?? current.status;
-        nextPaths = partial.filePaths ?? current.filePaths ?? [];
+        nextRefs = partial.fileRefs ?? current.fileRefs ?? [];
+        nextPaths =
+          partial.filePaths ??
+          (nextRefs.length ? nextRefs.map((ref) => ref.path) : current.filePaths ?? []);
         parts[idx] = {
           ...current,
           ...partial,
@@ -704,13 +757,15 @@ export class SessionManager {
           name: nextName,
           status: nextStatus,
           filePaths: nextPaths,
+          fileRefs: nextRefs,
         };
         return parts;
       }
       this.closeOpenThinking(parts);
       nextName = partial.name ?? "tool";
       nextStatus = partial.status ?? "running";
-      nextPaths = partial.filePaths ?? [];
+      nextRefs = partial.fileRefs ?? [];
+      nextPaths = partial.filePaths ?? nextRefs.map((ref) => ref.path);
       parts.push({
         kind: "tool",
         id: partial.id,
@@ -719,6 +774,7 @@ export class SessionManager {
         inputPreview: partial.inputPreview,
         outputPreview: partial.outputPreview,
         filePaths: nextPaths,
+        fileRefs: nextRefs,
       });
       return parts;
     });
@@ -747,40 +803,60 @@ export class SessionManager {
         break;
       }
       case "tool_execution_start": {
-        const id = String(event.toolCallId ?? event.id ?? randomUUID());
-        const name = String(event.toolName ?? event.name ?? "tool");
-        const rawArgs = event.args ?? event.input;
+        const data =
+          event.data && typeof event.data === "object"
+            ? (event.data as Record<string, unknown>)
+            : undefined;
+        const id = String(event.toolCallId ?? data?.toolCallId ?? "");
+        if (!id) {
+          return;
+        }
+        const name = String(event.toolName ?? data?.toolName ?? event.name ?? data?.name ?? "tool");
+        const rawArgs = event.args ?? event.input ?? data?.args ?? data?.input;
         this.upsertTool({
           id,
           name,
           status: "running",
           inputPreview: preview(rawArgs, 800),
+          fileRefs: collectToolFileRefs(rawArgs),
           filePaths: collectToolPaths(rawArgs),
         });
         break;
       }
       case "tool_execution_update": {
-        const id = String(event.toolCallId ?? event.id ?? "");
+        const data =
+          event.data && typeof event.data === "object"
+            ? (event.data as Record<string, unknown>)
+            : undefined;
+        const id = String(event.toolCallId ?? data?.toolCallId ?? "");
         if (!id) {
           return;
         }
         this.upsertTool({
           id,
           status: "running",
-          outputPreview: preview(event.result ?? event.output ?? event.partialResult),
+          outputPreview: preview(
+            event.result ?? event.output ?? event.partialResult ?? data?.result ?? data?.output,
+          ),
         });
         break;
       }
       case "tool_execution_end": {
-        const id = String(event.toolCallId ?? event.id ?? "");
+        const data =
+          event.data && typeof event.data === "object"
+            ? (event.data as Record<string, unknown>)
+            : undefined;
+        const id = String(event.toolCallId ?? data?.toolCallId ?? "");
         if (!id) {
           return;
         }
-        const failed = Boolean(event.isError ?? event.error);
+        const failed = Boolean(event.isError ?? event.error ?? data?.isError ?? data?.error);
         this.upsertTool({
           id,
           status: failed ? "error" : "done",
-          outputPreview: preview(event.result ?? event.output ?? event.error),
+          outputPreview: preview(
+            event.result ?? event.output ?? event.error ?? data?.result ?? data?.output ?? data?.error,
+          ),
         });
         break;
       }
@@ -819,26 +895,17 @@ export class SessionManager {
         // Visual end-of-turn only. Queue flush waits for agent_end so a
         // follow-up prompt isn't settled by a stale turn_end.
         if (this.currentAssistantId) {
+          const at = Date.now();
           this.patchMessage(this.currentAssistantId, (msg) => {
-            const parts = msg.parts.map((part) => {
-              if (part.kind !== "thinking") {
-                return part;
-              }
-              if (part.streaming === false && part.endedAt) {
-                return part;
-              }
-              return {
-                ...part,
-                streaming: false,
-                endedAt: part.endedAt ?? Date.now(),
-              };
-            });
+            const parts = [...msg.parts];
+            this.closeOpenThinking(parts, at);
             return {
               ...msg,
               streaming: false,
               parts,
             };
           });
+          this.applyAssistantTimingMeta(event.message);
         }
         break;
       case "agent_end":
@@ -871,19 +938,55 @@ export class SessionManager {
     const type = String(ev.type ?? "");
     switch (type) {
       case "thinking_start":
-        // Create an empty thinking part immediately so the UI can open/stream.
+        // Create an empty thinking part immediately so the UI can show a live thinking block.
         this.appendText("thinking", "");
-        break;
-      case "text_delta":
-        this.appendText("text", String(ev.delta ?? ""));
         break;
       case "thinking_delta":
         this.appendText("thinking", String(ev.delta ?? ""));
         break;
+      case "thinking_end": {
+        const content = typeof ev.content === "string" ? ev.content : "";
+        if (content) {
+          // Some providers only send the full thinking payload on end.
+          this.updateAssistant((parts) => {
+            const last = parts[parts.length - 1];
+            if (last?.kind === "thinking") {
+              const startedAt = last.startedAt ?? this.thinkingStartedAt ?? Date.now();
+              this.thinkingStartedAt = this.thinkingStartedAt ?? startedAt;
+              parts[parts.length - 1] = {
+                ...last,
+                text: last.text && last.text.length >= content.length ? last.text : content,
+                streaming: true,
+                startedAt,
+              };
+              return parts;
+            }
+            this.thinkingStartedAt = this.thinkingStartedAt ?? Date.now();
+            parts.push({
+              kind: "thinking",
+              text: content,
+              streaming: true,
+              startedAt: this.thinkingStartedAt,
+            });
+            return parts;
+          });
+        }
+        this.updateAssistant((parts) => {
+          this.closeOpenThinking(parts);
+          return parts;
+        });
+        break;
+      }
+      case "text_delta":
+        this.appendText("text", String(ev.delta ?? ""));
+        break;
       case "toolcall_start":
       case "tool_call_start":
       case "toolCall_start": {
-        const id = String(ev.toolCallId ?? ev.id ?? randomUUID());
+        const id = String(ev.toolCallId ?? ev.id ?? "");
+        if (!id) {
+          return;
+        }
         const name = String(ev.toolName ?? ev.name ?? "tool");
         const rawArgs = ev.args ?? ev.input;
         this.upsertTool({
@@ -891,6 +994,7 @@ export class SessionManager {
           name,
           status: "running",
           inputPreview: preview(rawArgs, 800),
+          fileRefs: collectToolFileRefs(rawArgs),
           filePaths: collectToolPaths(rawArgs),
         });
         break;
@@ -957,7 +1061,21 @@ export class SessionManager {
     }
     this.restoringHistory = true;
     try {
-      const raw = await this.client.getMessages();
+      let raw: unknown[] = [];
+      try {
+        raw = await this.client.getMessages();
+      } catch {
+        // Large sessions often exceed omp's 1 MiB RPC frame limit.
+        raw = [];
+      }
+
+      if (raw.length === 0) {
+        const sessionFile = await this.resolveSessionFile();
+        if (sessionFile) {
+          raw = await messagesFromSessionFile(sessionFile);
+        }
+      }
+
       const restored = chatMessagesFromOmp(raw);
       if (restored.length > 0) {
         this.messages = restored;
@@ -971,6 +1089,26 @@ export class SessionManager {
     }
   }
 
+  private async resolveSessionFile(): Promise<string | undefined> {
+    if (this.sessionFile?.trim()) {
+      return this.sessionFile.trim();
+    }
+    if (!this.client?.isReady) {
+      return undefined;
+    }
+    try {
+      const state = await this.client.getState();
+      const file = state.sessionFile;
+      if (typeof file === "string" && file.trim()) {
+        this.sessionFile = file.trim();
+        return this.sessionFile;
+      }
+    } catch {
+      // ignore
+    }
+    return undefined;
+  }
+
   async refreshSessionState(): Promise<void> {
     if (!this.client?.isReady) {
       return;
@@ -981,6 +1119,10 @@ export class SessionManager {
       if (typeof sid === "string" && sid.trim()) {
         this.sessionId = sid.trim();
         this.sessionIdStore?.set(this.sessionId);
+      }
+      const file = state.sessionFile;
+      if (typeof file === "string" && file.trim()) {
+        this.sessionFile = file.trim();
       }
       const modelRaw = state.model;
       if (modelRaw && typeof modelRaw === "object") {

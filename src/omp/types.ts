@@ -2,6 +2,14 @@ export type ChatRole = "user" | "assistant" | "system";
 
 export type ToolStatus = "running" | "done" | "error";
 
+export interface ToolFileRef {
+  path: string;
+  /** 1-based start line, when known (read offset / edit range). */
+  line?: number;
+  /** 1-based end line (inclusive), when known. */
+  endLine?: number;
+}
+
 export interface ToolCallPart {
   kind: "tool";
   id: string;
@@ -11,6 +19,8 @@ export interface ToolCallPart {
   outputPreview?: string;
   /** Paths touched by edit/write/delete-style tools (best-effort). */
   filePaths?: string[];
+  /** Path + optional line range for editor navigation. */
+  fileRefs?: ToolFileRef[];
 }
 
 export interface TextPart {
@@ -24,6 +34,8 @@ export interface ThinkingPart {
   streaming?: boolean;
   startedAt?: number;
   endedAt?: number;
+  /** Best-effort thinking duration in ms (wall clock / omp ttft/duration). */
+  durationMs?: number;
 }
 
 export type MessagePart = TextPart | ThinkingPart | ToolCallPart;
@@ -144,7 +156,8 @@ export type HostToWebview =
   | { type: "contextUsage"; contextUsage: ContextUsage | null; model?: string }
   | { type: "tabs"; tabs: ChatTabInfo[]; activeTabId: string }
   | { type: "fileResults"; requestId: number; files: FileSuggestItem[] }
-  | { type: "uiQuestion"; question: UiQuestion | null };
+  | { type: "uiQuestion"; question: UiQuestion | null }
+  | { type: "composerPrefill"; text: string };
 
 export type WebviewToHost =
   | { type: "ready" }
@@ -176,9 +189,11 @@ export type WebviewToHost =
       language?: string;
     }
   | { type: "removeAttachment"; id: string }
+  | { type: "recallQueued"; id: string; text?: string }
+  | { type: "removeQueued"; id: string; text?: string }
   | { type: "copy"; text: string }
   | { type: "insert"; text: string }
-  | { type: "openFile"; path: string }
+  | { type: "openFile"; path: string; line?: number; endLine?: number }
   | { type: "openExternal"; url: string }
   | { type: "searchFiles"; query: string; requestId: number }
   | { type: "runSlashCommand"; command: string }

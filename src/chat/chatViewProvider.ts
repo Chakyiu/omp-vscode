@@ -204,6 +204,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case "removeAttachment":
         this.sessions.removeAttachment(msg.id);
         break;
+      case "recallQueued": {
+        const recalled = this.sessions.recallQueued(msg.id, msg.text);
+        if (recalled) {
+          this.post({ type: "composerPrefill", text: recalled.text });
+        }
+        this.postState();
+        break;
+      }
+      case "removeQueued":
+        this.sessions.removeQueued(msg.id, msg.text);
+        this.postState();
+        break;
       case "copy":
         await vscode.env.clipboard.writeText(msg.text);
         vscode.window.setStatusBarMessage("Copied to clipboard", 1500);
@@ -255,7 +267,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           break;
         }
         try {
-          await vscode.window.showTextDocument(uri, { preview: false });
+          const lower = uri.fsPath.toLowerCase();
+          const isImage = /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(lower);
+          if (isImage) {
+            await vscode.commands.executeCommand("vscode.open", uri);
+            break;
+          }
+          const doc = await vscode.workspace.openTextDocument(uri);
+          const editor = await vscode.window.showTextDocument(doc, { preview: false });
+          const line = typeof msg.line === "number" && msg.line >= 1 ? Math.floor(msg.line) : undefined;
+          if (line) {
+            const endLineRaw =
+              typeof msg.endLine === "number" && msg.endLine >= line ? Math.floor(msg.endLine) : line;
+            const maxLine = Math.max(doc.lineCount, 1);
+            const startLine = Math.min(line, maxLine) - 1;
+            const endLine = Math.min(endLineRaw, maxLine) - 1;
+            const start = new vscode.Position(startLine, 0);
+            const end = doc.lineAt(endLine).range.end;
+            const range = new vscode.Range(start, end);
+            editor.selection = new vscode.Selection(start, end);
+            editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+          }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           vscode.window.showWarningMessage(`Could not open ${msg.path}: ${message}`);
@@ -394,6 +426,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       </div>
     </div>
 
+    <div id="activeQuestion" class="active-question" hidden></div>
+    <div id="uiQuestion" class="ui-question" hidden></div>
+
     <main id="messages" class="messages"></main>
 
     <section id="empty" class="empty visible">
@@ -427,9 +462,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       </div>
     </section>
 
-    <div id="uiQuestion" class="ui-question" hidden></div>
+    <div id="imagePreview" class="image-preview" hidden>
+      <button type="button" class="image-preview-backdrop" data-action="close-image-preview" aria-label="Close preview"></button>
+      <div class="image-preview-card" role="dialog" aria-modal="true" aria-label="Image preview">
+        <img id="imagePreviewImg" alt="Preview" />
+        <div class="image-preview-actions">
+          <button type="button" data-action="open-image-file" class="primary" hidden>Open file</button>
+          <button type="button" data-action="close-image-preview">Close</button>
+        </div>
+      </div>
+    </div>
     <footer class="composer-wrap">
       <div class="composer">
+        <div id="queuePanel" class="queue-panel" hidden>
+          <button id="queueToggle" class="queue-toggle" type="button" aria-expanded="false" aria-controls="queueMenu" title="Queued messages">
+            <span class="queue-toggle-icon" aria-hidden="true">☰</span>
+            <span id="queueToggleLabel" class="queue-toggle-label">0 queued</span>
+            <span class="chev" aria-hidden="true">▴</span>
+          </button>
+          <div id="queueMenu" class="queue-menu" hidden role="menu" aria-label="Queued messages">
+            <div class="queue-menu-header">
+              <span>Queued</span>
+              <button type="button" class="queue-menu-close" data-action="close-queue-menu" title="Close">×</button>
+            </div>
+            <div id="queueList" class="queue-list"></div>
+          </div>
+        </div>
         <div id="suggest" class="suggest" hidden>
           <div id="suggestHeader" class="suggest-header"></div>
           <div id="suggestList" class="suggest-list" role="listbox"></div>

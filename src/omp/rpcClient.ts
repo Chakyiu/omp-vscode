@@ -13,6 +13,7 @@ export interface OmpRpcClientEvents {
 }
 
 interface PendingRequest {
+  command: string;
   resolve: (event: OmpRpcEvent) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -104,14 +105,8 @@ export class OmpRpcClient extends EventEmitter {
         this.emit("ready");
       }
 
-      if (event.type === "response" && event.id != null) {
-        const id = Number(event.id);
-        const pending = this.pending.get(id);
-        if (pending) {
-          clearTimeout(pending.timer);
-          this.pending.delete(id);
-          pending.resolve(event);
-        }
+      if (event.type === "response") {
+        this.resolveResponse(event);
       }
 
       if (event.type === "message_update") {
@@ -179,17 +174,50 @@ export class OmpRpcClient extends EventEmitter {
     this.proc.stdin.write(`${JSON.stringify(command)}\n`);
   }
 
+  /**
+   * omp sometimes omits `id` on error responses (e.g. transport-limit /
+   * unknown-command). Fall back to matching the oldest pending request with
+   * the same command name so callers fail fast instead of timing out.
+   */
+  private resolveResponse(event: OmpRpcEvent): void {
+    if (event.id != null) {
+      const id = Number(event.id);
+      const pending = this.pending.get(id);
+      if (pending) {
+        clearTimeout(pending.timer);
+        this.pending.delete(id);
+        pending.resolve(event);
+        return;
+      }
+    }
+
+    const command = typeof event.command === "string" ? event.command : undefined;
+    if (!command) {
+      return;
+    }
+    for (const [id, pending] of this.pending) {
+      if (pending.command !== command) {
+        continue;
+      }
+      clearTimeout(pending.timer);
+      this.pending.delete(id);
+      pending.resolve(event);
+      return;
+    }
+  }
+
   request(command: Record<string, unknown>, timeoutMs = 10_000): Promise<OmpRpcEvent> {
     if (!this.proc?.stdin.writable) {
       return Promise.reject(new Error("omp RPC process is not running"));
     }
     const id = this.nextRequestId++;
+    const commandName = String(command.type ?? "unknown");
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`Timed out waiting for ${String(command.type)} response`));
+        reject(new Error(`Timed out waiting for ${commandName} response`));
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { command: commandName, resolve, reject, timer });
       try {
         this.send({ ...command, id });
       } catch (err) {
@@ -208,7 +236,40 @@ export class OmpRpcClient extends EventEmitter {
     return (response.data as Record<string, unknown>) ?? {};
   }
 
+  /**
+   * Prefer paged history when omp supports it; otherwise use monolithic
+   * get_messages. Large sessions on older omp can still exceed the 1 MiB
+   * frame limit — callers should fall back to reading sessionFile.
+   */
   async getMessages(): Promise<unknown[]> {
+    const paged = await this.request({ type: "get_messages_page", limit: 64 }, 30_000);
+    if (paged.success !== false) {
+      const all: unknown[] = [];
+      let data = (paged.data as Record<string, unknown> | undefined) ?? {};
+      let messages = Array.isArray(data.messages) ? data.messages : [];
+      all.push(...messages);
+      let cursor = data.nextCursor;
+      while (typeof cursor === "string" && cursor) {
+        const next = await this.request(
+          { type: "get_messages_page", cursor, limit: 64 },
+          30_000,
+        );
+        if (next.success === false) {
+          throw new Error(String(next.error ?? "get_messages_page failed"));
+        }
+        data = (next.data as Record<string, unknown> | undefined) ?? {};
+        messages = Array.isArray(data.messages) ? data.messages : [];
+        all.push(...messages);
+        cursor = data.nextCursor;
+      }
+      return all;
+    }
+
+    const pageError = String(paged.error ?? "get_messages_page failed");
+    if (!/unknown command/i.test(pageError)) {
+      throw new Error(pageError);
+    }
+
     const response = await this.request({ type: "get_messages" }, 30_000);
     if (response.success === false) {
       throw new Error(String(response.error ?? "get_messages failed"));

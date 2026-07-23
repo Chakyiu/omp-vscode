@@ -1,4 +1,7 @@
 import { randomUUID } from "crypto";
+import * as fs from "fs";
+import * as readline from "readline";
+import { collectToolFileRefs, collectToolPaths } from "./toolPaths";
 import type { ChatMessage, MessagePart, ToolCallPart } from "./types";
 
 const TOOL_PATH_KEYS = [
@@ -167,6 +170,40 @@ function createdAtOf(raw: Record<string, unknown>, fallback: number): number {
 }
 
 /**
+ * Read an omp session `.jsonl` and return message payloads in `get_messages` shape.
+ * Used when RPC history exceeds the 1 MiB stdout frame limit.
+ */
+export async function messagesFromSessionFile(filePath: string): Promise<unknown[]> {
+  const stream = fs.createReadStream(filePath, { encoding: "utf8" });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  const messages: unknown[] = [];
+  try {
+    for await (const line of rl) {
+      if (!line.trim()) {
+        continue;
+      }
+      let row: Record<string, unknown>;
+      try {
+        row = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      if (row.type !== "message") {
+        continue;
+      }
+      const message = row.message;
+      if (message && typeof message === "object") {
+        messages.push(message);
+      }
+    }
+  } finally {
+    rl.close();
+    stream.destroy();
+  }
+  return messages;
+}
+
+/**
  * Convert omp `get_messages` payload into UI ChatMessage list.
  * toolResult rows are folded into the matching assistant toolCall parts.
  */
@@ -236,23 +273,54 @@ export function chatMessagesFromOmp(rawMessages: unknown[]): ChatMessage[] {
         }
         if (p.type === "toolCall" || p.type === "tool_call") {
           const id = String(p.id ?? p.toolCallId ?? randomUUID());
+          const rawArgs = p.arguments ?? p.args ?? p.input;
+          const fileRefs = collectToolFileRefs(rawArgs);
           const tool: ToolCallPart = {
             kind: "tool",
             id,
             name: String(p.name ?? p.toolName ?? "tool"),
             status: "done",
-            inputPreview: preview(p.arguments ?? p.args ?? p.input, 800),
+            inputPreview: preview(rawArgs, 800),
+            fileRefs,
+            filePaths: fileRefs.map((ref) => ref.path),
           };
           toolIndex.set(id, { messageIndex, partIndex: parts.length });
           parts.push(tool);
         }
       }
+      const nestedMeta = (row.message as Record<string, unknown> | undefined) ?? row;
+      const duration = Number(nestedMeta.duration);
+      const ttft = Number(nestedMeta.ttft);
+      let assistantParts = parts;
+      if ((Number.isFinite(duration) && duration > 0) || (Number.isFinite(ttft) && ttft > 0)) {
+        let firstThinking = true;
+        assistantParts = parts.map((part) => {
+          if (part.kind !== "thinking") {
+            return part;
+          }
+          if (!firstThinking) {
+            return part;
+          }
+          firstThinking = false;
+          const durationMs = Number.isFinite(ttft) && ttft > 0 ? ttft : duration;
+          if (!Number.isFinite(durationMs) || durationMs <= 0) {
+            return part;
+          }
+          return {
+            ...part,
+            durationMs,
+            startedAt: createdAt > durationMs ? createdAt - durationMs : createdAt,
+            endedAt: createdAt,
+          };
+        });
+      }
+
       out.push({
         id: randomUUID(),
         role: "assistant",
         createdAt,
         streaming: false,
-        parts,
+        parts: assistantParts,
       });
       continue;
     }

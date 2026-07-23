@@ -1,6 +1,9 @@
 (function () {
   const vscode = acquireVsCodeApi();
   const collapseOpenIds = new Set();
+  /** Webview wall-clock for thinking blocks: id -> { startedAt, endedAt }. */
+  const thinkingClock = new Map();
+  let thinkingTimer = null;
 
   const messagesEl = document.getElementById("messages");
   const emptyEl = document.getElementById("empty");
@@ -29,6 +32,14 @@
   const suggestHeaderEl = document.getElementById("suggestHeader");
   const suggestListEl = document.getElementById("suggestList");
   const uiQuestionEl = document.getElementById("uiQuestion");
+  const activeQuestionEl = document.getElementById("activeQuestion");
+  const imagePreviewEl = document.getElementById("imagePreview");
+  const imagePreviewImg = document.getElementById("imagePreviewImg");
+  const queuePanelEl = document.getElementById("queuePanel");
+  const queueToggleEl = document.getElementById("queueToggle");
+  const queueToggleLabelEl = document.getElementById("queueToggleLabel");
+  const queueMenuEl = document.getElementById("queueMenu");
+  const queueListEl = document.getElementById("queueList");
 
   let state = {
     status: { state: "starting", detail: "Starting…" },
@@ -48,6 +59,7 @@
   // Follow new output only while the user is already near the bottom.
   let stickToBottom = true;
   let activeTabIdForScroll = "";
+  let queueMenuOpen = false;
 
   function isNearBottom(el, threshold) {
     if (!el) return true;
@@ -255,6 +267,50 @@
     return Boolean(msg && msg.parts && msg.parts.some(function (p) { return p.kind === "text" && p.text; }));
   }
 
+  function partsSignature(parts) {
+    return (parts || []).map(function (p) {
+      if (!p || !p.kind) return "?";
+      if (p.kind === "tool") return "tool:" + String(p.id || p.name || "");
+      return String(p.kind);
+    }).join("|");
+  }
+
+  function thinkingCollapseId(msg, partIndex) {
+    return "thinking:" + (msg && msg.id ? msg.id : "msg") + ":" + String(partIndex || 0);
+  }
+
+  function isThinkingLive(part, msg) {
+    return (
+      Boolean(msg && msg.streaming) &&
+      (part.streaming === true ||
+        (part.streaming !== false && !part.endedAt && hasTextPart(msg) === false))
+    );
+  }
+
+  function patchThinkingPart(existing, msg, part, partIndex) {
+    const collapseId = thinkingCollapseId(msg, partIndex);
+    const details = existing.querySelector('[data-collapse-id="' + collapseId.replace(/"/g, "") + '"]');
+    if (!details) return false;
+    const pre = details.querySelector("pre.thinking-body");
+    if (!pre) return false;
+    const live = isThinkingLive(part, msg);
+    // Only replace text when it actually changed to avoid visible flicker.
+    const nextText = part.text || "";
+    if (pre.textContent !== nextText) {
+      pre.textContent = nextText;
+    }
+    details.classList.toggle("live", live);
+    pre.classList.toggle("streaming", live);
+    const summaryLabel = details.querySelector(".collapse-title");
+    if (summaryLabel) {
+      const nextLabel = thinkingLabel(part, live, collapseId);
+      if (summaryLabel.textContent !== nextLabel) {
+        summaryLabel.textContent = nextLabel;
+      }
+    }
+    return true;
+  }
+
 
 
   if (messagesEl) {
@@ -301,15 +357,83 @@
     return rem ? min + "m " + rem + "s" : min + "m";
   }
 
-  function thinkingLabel(part, isLive) {
-    if (isLive) return "Thinking…";
-    const start = Number(part.startedAt);
-    const end = Number(part.endedAt || Date.now());
-    if (Number.isFinite(start) && end >= start) {
-      const dur = formatDuration(end - start);
-      if (dur) return "Thought for " + dur;
+  function thinkingDurationMs(part, collapseId) {
+    if (part && Number.isFinite(Number(part.durationMs)) && Number(part.durationMs) > 0) {
+      return Number(part.durationMs);
     }
+    const clock = collapseId ? thinkingClock.get(collapseId) : null;
+    const start = Number(part && part.startedAt != null ? part.startedAt : clock && clock.startedAt);
+    const end = Number(
+      part && part.endedAt != null
+        ? part.endedAt
+        : clock && clock.endedAt != null
+          ? clock.endedAt
+          : Date.now(),
+    );
+    if (Number.isFinite(start) && end >= start) {
+      const measured = end - start;
+      if (measured >= 1000) return measured;
+    }
+    if (clock && Number.isFinite(clock.startedAt)) {
+      const localEnd = clock.endedAt != null ? clock.endedAt : Date.now();
+      const local = localEnd - clock.startedAt;
+      if (local >= 1000) return local;
+    }
+    return Number.isFinite(start) && end >= start ? Math.max(0, end - start) : 0;
+  }
+
+  function thinkingLabel(part, isLive, collapseId) {
+    if (isLive) {
+      if (collapseId && !thinkingClock.has(collapseId)) {
+        thinkingClock.set(collapseId, { startedAt: Date.now() });
+      }
+      const ms = thinkingDurationMs(part, collapseId);
+      const dur = formatDuration(ms);
+      return dur && ms >= 1000 ? "Thinking… " + dur : "Thinking…";
+    }
+    if (collapseId) {
+      const clock = thinkingClock.get(collapseId);
+      if (clock && clock.endedAt == null) {
+        clock.endedAt = Date.now();
+        thinkingClock.set(collapseId, clock);
+      }
+    }
+    const ms = thinkingDurationMs(part, collapseId);
+    const dur = formatDuration(ms);
+    if (dur) return "Thought for " + dur;
     return "Thought";
+  }
+
+  function syncThinkingTimer() {
+    const hasLive = Boolean(document.querySelector(".collapse.thinking.live"));
+    if (!hasLive) {
+      if (thinkingTimer) {
+        clearInterval(thinkingTimer);
+        thinkingTimer = null;
+      }
+      return;
+    }
+    if (thinkingTimer) return;
+    thinkingTimer = setInterval(function () {
+      const nodes = document.querySelectorAll(".collapse.thinking.live");
+      if (!nodes.length) {
+        clearInterval(thinkingTimer);
+        thinkingTimer = null;
+        return;
+      }
+      nodes.forEach(function (details) {
+        const id = details.getAttribute("data-collapse-id") || "";
+        const title = details.querySelector(".collapse-title");
+        if (!title) return;
+        if (id && !thinkingClock.has(id)) {
+          thinkingClock.set(id, { startedAt: Date.now() });
+        }
+        const clock = thinkingClock.get(id);
+        const ms = clock ? Date.now() - clock.startedAt : 0;
+        const dur = formatDuration(ms);
+        title.textContent = dur && ms >= 1000 ? "Thinking… " + dur : "Thinking…";
+      });
+    }, 500);
   }
 
   function normalizeToolKey(name) {
@@ -522,13 +646,192 @@
     return all.length ? all[0] : "";
   }
 
+  function parseLineSelector(sel) {
+    if (!sel) return {};
+    const first = String(sel).split(",")[0].trim();
+    if (!first || /^(raw|conflicts)$/i.test(first)) return {};
+    if (!/^(\d+)(?:([-+])(\d+))?$/.test(first)) return {};
+    const m = first.match(/^(\d+)(?:([-+])(\d+))?$/);
+    const start = parseInt(m[1], 10);
+    if (!Number.isFinite(start) || start < 1) return {};
+    if (!m[2] || !m[3]) return { line: start };
+    const rhs = parseInt(m[3], 10);
+    if (!Number.isFinite(rhs)) return { line: start };
+    if (m[2] === "+") {
+      if (rhs < 1) return { line: start };
+      return { line: start, endLine: start + rhs - 1 };
+    }
+    if (rhs < start) return { line: start };
+    return { line: start, endLine: rhs };
+  }
+
+  function splitPathAndSelector(raw) {
+    let path = String(raw || "").trim();
+    const sels = [];
+    for (let i = 0; i < 2; i += 1) {
+      const idx = path.lastIndexOf(":");
+      if (idx <= 0) break;
+      const maybe = path.slice(idx + 1);
+      if (!/^(raw|conflicts|\d+(?:[-+]\d*)?(?:,\d+(?:[-+]\d*)?)*)$/i.test(maybe)) break;
+      sels.unshift(maybe);
+      path = path.slice(0, idx);
+    }
+    const range = parseLineSelector(sels.join(":") || "");
+    return { path: path, line: range.line, endLine: range.endLine };
+  }
+
+  function extractHashlineOpRange(text) {
+    const re = /\b(?:SWAP(?:\.BLK)?|DEL(?:\.BLK)?|INS(?:\.BLK)?\.(?:PRE|POST)|INS\.(?:PRE|POST))\s+(\d+)(?:\.=(\d+))?/g;
+    let line;
+    let endLine;
+    let match;
+    const src = String(text || "");
+    while ((match = re.exec(src))) {
+      const start = parseInt(match[1], 10);
+      const end = match[2] ? parseInt(match[2], 10) : start;
+      if (!Number.isFinite(start) || start < 1) continue;
+      line = line == null ? start : Math.min(line, start);
+      const capped = Number.isFinite(end) && end >= start ? end : start;
+      endLine = endLine == null ? capped : Math.max(endLine, capped);
+    }
+    if (line == null) return {};
+    return endLine && endLine !== line ? { line: line, endLine: endLine } : { line: line };
+  }
+
+  function extractHashlineRefs(text) {
+    const src = String(text || "");
+    const refs = [];
+    const re = /\[\s*([^\]\n#]+?)\s*#[0-9A-Fa-f]{4,}\s*\]/g;
+    const matches = [];
+    let match;
+    while ((match = re.exec(src))) matches.push(match);
+    if (!matches.length) {
+      const paths = extractHashlinePaths(src);
+      const range = extractHashlineOpRange(src);
+      for (let i = 0; i < paths.length; i += 1) {
+        refs.push({ path: paths[i], line: range.line, endLine: range.endLine });
+      }
+      return refs;
+    }
+    for (let i = 0; i < matches.length; i += 1) {
+      const m = matches[i];
+      const path = m[1] ? m[1].trim().replace(/^["']|["']$/g, "") : "";
+      if (!path) continue;
+      const bodyStart = m.index + m[0].length;
+      const bodyEnd = i + 1 < matches.length ? matches[i + 1].index : src.length;
+      const range = extractHashlineOpRange(src.slice(bodyStart, bodyEnd));
+      refs.push({ path: path, line: range.line, endLine: range.endLine });
+    }
+    return refs;
+  }
+
+  function pushToolFileRef(refs, ref) {
+    const path = normalizeToolFilePath(ref && ref.path);
+    if (!path) return;
+    const next = { path: path };
+    if (ref.line && ref.line >= 1) {
+      next.line = Math.floor(ref.line);
+      if (ref.endLine && ref.endLine >= next.line) next.endLine = Math.floor(ref.endLine);
+    }
+    for (let i = 0; i < refs.length; i += 1) {
+      if (refs[i].path === next.path) {
+        if (next.line != null) {
+          if (refs[i].line == null) {
+            refs[i].line = next.line;
+            refs[i].endLine = next.endLine;
+          } else {
+            const start = Math.min(refs[i].line, next.line);
+            const end = Math.max(refs[i].endLine || refs[i].line, next.endLine || next.line);
+            refs[i].line = start;
+            if (end !== start) refs[i].endLine = end;
+            else delete refs[i].endLine;
+          }
+        }
+        return;
+      }
+    }
+    refs.push(next);
+  }
+
+  function positiveLine(value) {
+    if (typeof value === "number" && Number.isFinite(value) && value >= 1) return Math.floor(value);
+    if (typeof value === "string" && /^\d+$/.test(value.trim())) {
+      const n = parseInt(value.trim(), 10);
+      if (n >= 1) return n;
+    }
+    return null;
+  }
+
+  function collectToolFileRefsFromPreview(previewText) {
+    const refs = [];
+    const obj = parseToolInput(previewText);
+    if (!obj) {
+      const text = String(previewText || "");
+      if (/\[\s*[^\]\n#]+?\s*#[0-9A-Fa-f]{4,}\s*\]/.test(text) || /\b(?:SWAP|DEL|INS\.)/.test(text)) {
+        extractHashlineRefs(text).forEach(function (ref) { pushToolFileRef(refs, ref); });
+      } else {
+        const split = splitPathAndSelector(text);
+        if (split.path) pushToolFileRef(refs, split);
+      }
+      return refs;
+    }
+
+    const offset = positiveLine(obj.offset != null ? obj.offset : (obj.startLine != null ? obj.startLine : (obj.start_line != null ? obj.start_line : obj.line)));
+    const limit = positiveLine(obj.limit);
+    const endLineField = positiveLine(obj.endLine != null ? obj.endLine : (obj.end_line != null ? obj.end_line : obj.to));
+    let fieldRange = {};
+    if (offset != null) {
+      fieldRange = {
+        line: offset,
+        endLine: endLineField && endLineField >= offset ? endLineField : (limit != null ? offset + limit - 1 : undefined),
+      };
+    } else if (typeof obj.sel === "string") {
+      fieldRange = parseLineSelector(obj.sel);
+    }
+
+    for (let i = 0; i < TOOL_PATH_KEYS.length; i += 1) {
+      const value = obj[TOOL_PATH_KEYS[i]];
+      if (typeof value !== "string" || !value.trim()) continue;
+      const split = splitPathAndSelector(value);
+      pushToolFileRef(refs, {
+        path: split.path,
+        line: split.line || fieldRange.line,
+        endLine: split.endLine || fieldRange.endLine,
+      });
+    }
+
+    ["input", "_input", "patch", "diff"].forEach(function (key) {
+      if (typeof obj[key] === "string" && obj[key].trim()) {
+        extractHashlineRefs(obj[key]).forEach(function (ref) { pushToolFileRef(refs, ref); });
+      }
+    });
+    if (Array.isArray(obj.paths)) {
+      obj.paths.forEach(function (item) {
+        if (typeof item === "string") {
+          const split = splitPathAndSelector(item);
+          if (split.path) pushToolFileRef(refs, split);
+        }
+      });
+    }
+    if (Array.isArray(obj.edits)) {
+      obj.edits.forEach(function (edit) {
+        if (edit && typeof edit === "object") {
+          // Recurse via JSON preview for nested edit objects.
+          collectToolFileRefsFromPreview(JSON.stringify(edit)).forEach(function (ref) {
+            pushToolFileRef(refs, ref);
+          });
+        }
+      });
+    }
+    return refs;
+  }
+
   function pickToolPathFromObject(obj) {
     if (!obj || typeof obj !== "object") return "";
     for (let i = 0; i < TOOL_PATH_KEYS.length; i += 1) {
       const value = obj[TOOL_PATH_KEYS[i]];
       if (typeof value === "string" && value.trim()) return value.trim();
     }
-    // hashline / apply_patch often bury the path inside input text
     const nestedKeys = ["input", "_input", "patch", "diff"];
     for (let i = 0; i < nestedKeys.length; i += 1) {
       const nested = obj[nestedKeys[i]];
@@ -558,40 +861,50 @@
 
   function extractToolFilePath(name, previewText) {
     if (!isFilePathTool(name)) return "";
-    const obj = parseToolInput(previewText);
-    if (obj) {
-      const fromObj = pickToolPathFromObject(obj);
-      if (fromObj) return normalizeToolFilePath(fromObj);
-    }
-    // Recover path from truncated JSON previews (common for write/edit payloads).
-    const text = String(previewText || "");
-    const match = text.match(/"(?:path|file_path|filePath|filepath|file|target_notebook|target|entry)"\s*:\s*"((?:\\.|[^"\\])*)"/);
-    if (match && match[1]) return normalizeToolFilePath(unescapeJsonString(match[1]));
-    const nameMatch = text.match(/"name"\s*:\s*"((?:\\.|[^"\\])*(?:\/|\\)(?:\\.|[^"\\])*)"/);
-    if (nameMatch && nameMatch[1]) return normalizeToolFilePath(unescapeJsonString(nameMatch[1]));
-    const fromHashline = extractHashlinePath(text);
-    if (fromHashline) return normalizeToolFilePath(fromHashline);
-    return "";
+    const refs = collectToolFileRefsFromPreview(previewText);
+    return refs.length ? refs[0].path : "";
   }
 
-  function formatToolFilePath(pathValue) {
+  function formatToolFilePath(pathValue, line, endLine) {
     const value = normalizeToolFilePath(pathValue);
     if (!value) return "";
     const display = value.replace(/\\/g, "/");
     const parts = display.split("/").filter(Boolean);
-    if (parts.length <= 3) return parts.join("/") || display;
-    return "…/" + parts.slice(-3).join("/");
+    const base = parts.length ? parts[parts.length - 1] : display;
+    if (line && line >= 1) {
+      if (endLine && endLine > line) return base + ":" + line + "-" + endLine;
+      return base + ":" + line;
+    }
+    return base;
   }
 
-  function renderFileLink(pathValue) {
-    const full = normalizeToolFilePath(pathValue);
+  function fileChipIcon() {
+    return (
+      '<svg class="file-link-icon" viewBox="0 0 16 16" aria-hidden="true">' +
+        '<path fill="currentColor" d="M9.5 1.1H4.75A1.75 1.75 0 0 0 3 2.85v10.3c0 .97.78 1.75 1.75 1.75h6.5c.97 0 1.75-.78 1.75-1.75V5.6L9.5 1.1zm.25 1.48L12.4 5.2H9.75a.5.5 0 0 1-.5-.5V2.58zM4.75 13.4a.25.25 0 0 1-.25-.25V2.85c0-.14.11-.25.25-.25H8v2.6A2 2 0 0 0 10 7.2h2.25v5.95a.25.25 0 0 1-.25.25h-7.25z"/>' +
+      "</svg>"
+    );
+  }
+
+  function renderFileLink(refOrPath) {
+    const ref = typeof refOrPath === "string" ? { path: refOrPath } : (refOrPath || {});
+    const full = normalizeToolFilePath(ref.path);
     if (!full) return "";
-    const display = formatToolFilePath(full);
+    const line = ref.line && ref.line >= 1 ? Math.floor(ref.line) : 0;
+    const endLine = ref.endLine && ref.endLine >= line ? Math.floor(ref.endLine) : 0;
+    const display = formatToolFilePath(full, line, endLine);
+    const title = line
+      ? full + ":" + line + (endLine && endLine !== line ? "-" + endLine : "")
+      : full;
     return (
       '<button type="button" class="file-link" data-action="open-file" data-path="' +
         escapeHtml(full) +
-        '" title="Open ' + escapeHtml(full) + '">' +
-        escapeHtml(display) +
+        '"' +
+        (line ? ' data-line="' + line + '"' : "") +
+        (endLine && endLine !== line ? ' data-end-line="' + endLine + '"' : "") +
+        ' title="' + escapeHtml(title) + '">' +
+        fileChipIcon() +
+        '<span class="file-link-label">' + escapeHtml(display) + '</span>' +
       "</button>"
     );
   }
@@ -663,20 +976,20 @@
   function renderPart(part, msg, partIndex) {
     if (part.kind === "thinking") {
       if (state.showThinking === false) return "";
-      const isLive =
-        Boolean(msg && msg.streaming) &&
-        (part.streaming === true || (part.streaming !== false && !part.endedAt && hasTextPart(msg) === false));
-      const collapseId = "thinking:" + (msg && msg.id ? msg.id : "msg") + ":" + String(partIndex || 0);
+      const isLive = isThinkingLive(part, msg);
+      const collapseId = thinkingCollapseId(msg, partIndex);
       const openAttr = collapseOpenAttr(collapseId, isLive);
       const liveClass = isLive ? " live" : "";
       const streamClass = isLive ? " streaming" : "";
-      const label = thinkingLabel(part, isLive);
+      const label = thinkingLabel(part, isLive, collapseId);
       const body = escapeHtml(part.text || "");
       return (
         '<details class="collapse thinking' + liveClass + '" data-collapse-id="' + escapeHtml(collapseId) + '"' + openAttr + '>' +
           '<summary class="collapse-summary">' +
-            chevronIcon() +
-            '<span class="collapse-title">' + escapeHtml(label) + '</span>' +
+            '<span class="collapse-row">' +
+              chevronIcon() +
+              '<span class="collapse-title">' + escapeHtml(label) + '</span>' +
+            '</span>' +
           '</summary>' +
           '<div class="collapse-body">' +
             '<pre class="thinking-body' + streamClass + '">' + body + '</pre>' +
@@ -687,28 +1000,49 @@
     if (part.kind === "tool") {
       const running = part.status === "running";
       const collapseId = "tool:" + String(part.id || part.name || "tool");
-      const openAttr = collapseOpenAttr(collapseId, running);
+      // Keep tool/command cards collapsed until the user expands them.
+      const openAttr = collapseOpenAttr(collapseId, false);
       const liveClass = running ? " live" : "";
-      const title = toolTitle(part.name, part.inputPreview);
-      const filePaths = [];
-      if (Array.isArray(part.filePaths)) {
-        for (let i = 0; i < part.filePaths.length; i += 1) {
-          const p = normalizeToolFilePath(part.filePaths[i]);
-          if (p && filePaths.indexOf(p) < 0) filePaths.push(p);
+      const title = toolTitle(part.name, part.inputPreview) || (running ? "Running tool" : "Tool");
+      const toolKey = normalizeToolKey(part.name);
+      const toolIdentity = parseToolIdentity(part.name);
+      const toolAction = toolIdentity.action || toolIdentity.leaf || toolKey;
+      const isCommandTool =
+        toolKey === "bash" ||
+        toolKey === "shell" ||
+        toolAction === "bash" ||
+        toolAction === "shell";
+      const fileRefs = [];
+      const singleFileTool = isFilePathTool(part.name);
+      // Ran command should show the command text, not file hyperlinks mined from argv.
+      if (!isCommandTool) {
+        if (Array.isArray(part.fileRefs)) {
+          for (let i = 0; i < part.fileRefs.length; i += 1) {
+            pushToolFileRef(fileRefs, part.fileRefs[i]);
+            if (singleFileTool && fileRefs.length >= 1) break;
+          }
+        }
+        if ((!singleFileTool || fileRefs.length === 0) && Array.isArray(part.filePaths)) {
+          for (let i = 0; i < part.filePaths.length; i += 1) {
+            pushToolFileRef(fileRefs, { path: part.filePaths[i] });
+            if (singleFileTool && fileRefs.length >= 1) break;
+          }
+        }
+        // Only mine the tool input for paths. Output previews (especially Read)
+        // often contain other file paths from file contents and create noisy chips.
+        if (fileRefs.length === 0 || !singleFileTool) {
+          collectToolFileRefsFromPreview(part.inputPreview || "").forEach(function (ref) {
+            if (singleFileTool && fileRefs.length >= 1) return;
+            pushToolFileRef(fileRefs, ref);
+          });
+        }
+        if (singleFileTool && fileRefs.length > 1) {
+          fileRefs.length = 1;
         }
       }
-      const fallbackPath =
-        extractToolFilePath(part.name, part.inputPreview) ||
-        extractToolFilePath(part.name, part.outputPreview);
-      if (fallbackPath && filePaths.indexOf(fallbackPath) < 0) filePaths.push(fallbackPath);
-      // Recover extra hashline paths from previews when available.
-      extractHashlinePaths(part.inputPreview || "").concat(extractHashlinePaths(part.outputPreview || "")).forEach(function (p) {
-        const n = normalizeToolFilePath(p);
-        if (n && filePaths.indexOf(n) < 0) filePaths.push(n);
-      });
-      const summary = filePaths.length ? "" : toolSummary(part.name, part.inputPreview);
-      const summaryHtml = filePaths.length
-        ? '<span class="collapse-meta">' + filePaths.map(renderFileLink).join('<span class="file-sep"> · </span>') + '</span>'
+      const summary = fileRefs.length ? "" : toolSummary(part.name, part.inputPreview);
+      const summaryHtml = fileRefs.length
+        ? '<span class="collapse-meta">' + fileRefs.map(renderFileLink).join('<span class="file-sep"> · </span>') + '</span>'
         : (summary ? '<span class="collapse-meta">' + escapeHtml(summary) + '</span>' : "");
       const sections = [];
       if (part.inputPreview) {
@@ -730,13 +1064,27 @@
       const body = sections.length
         ? '<div class="collapse-body tool-body">' + sections.join("") + '</div>'
         : "";
+      const rowInner =
+        '<span class="collapse-row">' +
+          (body ? chevronIcon() : '<span class="collapse-chevron-spacer" aria-hidden="true"></span>') +
+          '<span class="collapse-title">' + escapeHtml(title) + '</span>' +
+          summaryHtml +
+          statusBadge(part.status) +
+        '</span>';
+      // No input/output yet (or ever): don't render a fake expandable disclosure.
+      if (!body) {
+        return (
+          '<div class="collapse tool flat' + liveClass + '" data-collapse-id="' + escapeHtml(collapseId) + '">' +
+            '<div class="collapse-summary">' +
+              rowInner +
+            '</div>' +
+          '</div>'
+        );
+      }
       return (
         '<details class="collapse tool' + liveClass + '" data-collapse-id="' + escapeHtml(collapseId) + '"' + openAttr + '>' +
           '<summary class="collapse-summary">' +
-            chevronIcon() +
-            '<span class="collapse-title">' + escapeHtml(title) + '</span>' +
-            summaryHtml +
-            statusBadge(part.status) +
+            rowInner +
           '</summary>' +
           body +
         '</details>'
@@ -750,15 +1098,25 @@
     const images = [];
     const others = [];
     attachments.forEach(function (a) {
-      if (a.kind === "image" && a.previewDataUrl) images.push(a);
+      if (a.kind === "image") images.push(a);
       else others.push(a);
     });
     let html = "";
     if (images.length) {
       html += `<div class="msg-images">${images.map(function (a) {
         const alt = escapeHtml(a.label || "image");
-        const title = escapeHtml(a.fsPath || a.path || a.label || "");
-        return `<img class="msg-image" src="${a.previewDataUrl}" alt="${alt}" title="${title}" />`;
+        const path = escapeHtml(a.fsPath || a.path || "");
+        const title = escapeHtml(a.fsPath || a.path || a.label || "Preview image");
+        if (a.previewDataUrl) {
+          return `<button type="button" class="msg-image-btn" data-action="preview-image" data-src="${a.previewDataUrl}" data-path="${path}" title="${title}">
+            <img class="msg-image" src="${a.previewDataUrl}" alt="${alt}" />
+          </button>`;
+        }
+        const label = escapeHtml(a.label || a.path || a.fsPath || "image");
+        return `<button type="button" class="msg-image-fallback" data-action="preview-image" data-path="${path}" title="${title}">
+          <span class="att-icon">${kindIcon("image")}</span>
+          <span class="att-label">${label}</span>
+        </button>`;
       }).join("")}</div>`;
     }
     if (others.length) {
@@ -792,11 +1150,9 @@
         ? `<div class="bubble streaming"></div>`
         : "";
 
-    const queued = msg.queued ? " queued" : "";
-    const queuedBadge = msg.queued ? '<div class="queue-badge">Queued</div>' : "";
-    return `<article class="msg ${msg.role}${queued}" data-id="${msg.id}">
+    const partsSig = escapeHtml(partsSignature(msg.parts));
+    return `<article class="msg ${msg.role}" data-id="${msg.id}" data-parts-sig="${partsSig}">
       <div class="role">${msg.role}</div>
-      ${queuedBadge}
       ${partsHtml || fallback}
       ${attachmentsHtml}
     </article>`;
@@ -818,8 +1174,9 @@
     attachmentsEl.innerHTML = state.attachments
       .map(function (a) {
         const isImagePreview = a.kind === "image" && a.previewDataUrl;
+        const path = escapeHtml(a.fsPath || a.path || "");
         const thumb = a.previewDataUrl
-          ? `<img class="att-thumb" src="${a.previewDataUrl}" alt="" />`
+          ? `<img class="att-thumb" src="${a.previewDataUrl}" alt="" data-action="preview-image" data-src="${a.previewDataUrl}" data-path="${path}" title="Preview image" />`
           : `<span class="att-icon">${kindIcon(a.kind)}</span>`;
         const cls = a.kind === "context" ? "att context" : `att ${escapeHtml(a.kind || "file")}`;
         const label = isImagePreview ? "" : `<span class="att-label">${escapeHtml(a.label)}</span>`;
@@ -996,51 +1353,60 @@
       sendBtn.setAttribute("aria-label", busy ? "Queue" : "Send");
       sendBtn.classList.toggle("queue", busy);
 
-      const hasMessages = messages.length > 0;
+      const transcript = getTranscriptMessages();
+      const hasMessages = transcript.length > 0;
       emptyEl.classList.toggle("visible", hasMessages === false);
       messagesEl.style.display = hasMessages ? "flex" : "none";
+      renderQueue();
 
       if (hasMessages) {
-        const last = messages[messages.length - 1];
+        const last = transcript[transcript.length - 1];
         const existing = messagesEl.querySelector(`.msg[data-id="${last.id}"]`);
         const canPatch =
           existing &&
           last.role === "assistant" &&
           last.streaming &&
-          messagesEl.children.length === messages.length;
+          messagesEl.children.length === transcript.length;
         const prevScrollTop = messagesEl.scrollTop;
         const prevScrollHeight = messagesEl.scrollHeight;
         const shouldStick = stickToBottom || isNearBottom(messagesEl, 80);
 
         if (canPatch) {
-          const thinkingPart = Array.prototype.slice.call(last.parts).reverse().find(function (p) { return p.kind === "thinking"; });
-          const textPart = Array.prototype.slice.call(last.parts).reverse().find(function (p) { return p.kind === "text"; });
-          const thinkingPre = existing.querySelector("pre.thinking-body");
-          const thinkingDetails = existing.querySelector("details.thinking, details.collapse.thinking");
-          if (thinkingPart && thinkingPre && thinkingDetails) {
-            thinkingPre.textContent = thinkingPart.text || "";
-            // Keep the user's expand/collapse choice; only auto-open while live if not closed.
-            const live = thinkingPart.streaming !== false && textPart == null;
-            thinkingDetails.classList.toggle("live", live);
-            const summaryLabel = thinkingDetails.querySelector(".collapse-label, .thinking-label");
-            if (summaryLabel) {
-              summaryLabel.textContent = live ? "Thinking…" : (summaryLabel.textContent || "Thinking");
+          const signature = partsSignature(last.parts);
+          const existingSig = existing.getAttribute("data-parts-sig") || "";
+          // Remount when thinking/tool/text structure changes so we never write the
+          // newest thinking stream into an older Thought block.
+          if (signature !== existingSig) {
+            existing.outerHTML = renderMessage(last);
+          } else {
+            let thinkingPatched = false;
+            (last.parts || []).forEach(function (part, idx) {
+              if (part.kind !== "thinking") return;
+              if (patchThinkingPart(existing, last, part, idx)) {
+                thinkingPatched = true;
+              }
+            });
+            if (thinkingPatched) {
+              syncThinkingTimer();
             }
-            thinkingPre.classList.toggle("streaming", live);
-          } else if (thinkingPart && thinkingPre == null) {
-            existing.outerHTML = renderMessage(last);
-          }
 
-          const bubbles = existing.querySelectorAll(".bubble");
-          const lastBubble = bubbles[bubbles.length - 1];
-          if (textPart && lastBubble && lastBubble.closest(".thinking") == null && lastBubble.closest(".collapse") == null) {
-            lastBubble.innerHTML = renderMarkdownish(textPart.text || "");
-            lastBubble.classList.toggle("streaming", true);
-          } else if (textPart && lastBubble == null) {
-            existing.outerHTML = renderMessage(last);
+            const textPart = Array.prototype.slice.call(last.parts || []).reverse().find(function (p) {
+              return p.kind === "text";
+            });
+            const bubbles = existing.querySelectorAll(".bubble");
+            const lastBubble = bubbles[bubbles.length - 1];
+            if (textPart && lastBubble && lastBubble.closest(".thinking") == null && lastBubble.closest(".collapse") == null) {
+              const nextHtml = renderMarkdownish(textPart.text || "");
+              if (lastBubble.innerHTML !== nextHtml) {
+                lastBubble.innerHTML = nextHtml;
+              }
+              lastBubble.classList.toggle("streaming", true);
+            } else if (textPart && lastBubble == null) {
+              existing.outerHTML = renderMessage(last);
+            }
           }
         } else {
-          messagesEl.innerHTML = messages.map(renderMessage).join("");
+          messagesEl.innerHTML = transcript.map(renderMessage).join("");
           if (!shouldStick) {
             // Preserve the user's reading position across full re-renders.
             const delta = messagesEl.scrollHeight - prevScrollHeight;
@@ -1056,7 +1422,9 @@
       }
 
       renderAttachments();
+      renderActiveQuestion();
       renderUiQuestion();
+      syncThinkingTimer();
     } catch (err) {
       console.error("OMP Chat render failed", err);
       if (statusDot) {
@@ -1067,6 +1435,55 @@
   }
 
 
+
+
+  function getRunningUserQuestion() {
+    const transcript = getTranscriptMessages();
+    if (!transcript.length) return null;
+    const busy = state.status && state.status.state === "busy";
+    const last = transcript[transcript.length - 1];
+    const streaming = Boolean(last && last.role === "assistant" && last.streaming);
+    if (!busy && !streaming) return null;
+    for (let i = transcript.length - 1; i >= 0; i -= 1) {
+      const msg = transcript[i];
+      if (!msg || msg.role !== "user" || msg.queued) continue;
+      const textPart = (msg.parts || []).find(function (p) { return p && p.kind === "text" && p.text; });
+      const text = textPart ? String(textPart.text || "").trim() : "";
+      const attachments = Array.isArray(msg.attachments) ? msg.attachments : [];
+      if (!text && !attachments.length) continue;
+      return { id: msg.id, text: text, attachments: attachments };
+    }
+    return null;
+  }
+
+  let activeQuestionSignature = "";
+
+  function renderActiveQuestion() {
+    if (!activeQuestionEl) return;
+    const q = getRunningUserQuestion();
+    if (!q) {
+      activeQuestionSignature = "";
+      activeQuestionEl.hidden = true;
+      activeQuestionEl.innerHTML = "";
+      return;
+    }
+    const preview = q.text
+      ? q.text.replace(/\s+/g, " ").trim()
+      : (q.attachments.length === 1
+          ? (q.attachments[0].label || "Attachment")
+          : q.attachments.length + " attachments");
+    const signature = q.id + "\0" + preview;
+    if (signature === activeQuestionSignature && !activeQuestionEl.hidden) {
+      return;
+    }
+    activeQuestionSignature = signature;
+    activeQuestionEl.hidden = false;
+    activeQuestionEl.innerHTML =
+      '<div class="active-question-card" data-id="' + escapeHtml(q.id) + '">' +
+        '<div class="active-question-kicker">Running</div>' +
+        '<div class="active-question-text">' + escapeHtml(preview) + '</div>' +
+      '</div>';
+  }
 
   function answerUiQuestion(payload) {
     if (!payload || !payload.id) return;
@@ -1229,6 +1646,7 @@
       suggestEl.hidden = true;
       return;
     }
+    closeQueueMenu();
     suggestEl.hidden = false;
     suggestHeaderEl.textContent = suggest.kind === "command" ? "Commands" : "Attach file or folder";
     suggestListEl.innerHTML = suggest.items.map(function (item, index) {
@@ -1330,6 +1748,138 @@
     if (suggestEl) suggestEl.hidden = suggest.items.length === 0;
   }
 
+
+  function queuedMessageText(msg) {
+    if (!msg || !msg.parts) return "";
+    return msg.parts
+      .filter(function (part) { return part.kind === "text"; })
+      .map(function (part) { return part.text || ""; })
+      .join("\n");
+  }
+
+  function getQueuedMessages() {
+    return (state.messages || []).filter(function (m) { return m && m.queued; });
+  }
+
+  function getTranscriptMessages() {
+    return (state.messages || []).filter(function (m) { return m && !m.queued; });
+  }
+
+  function queuePreviewText(msg) {
+    const text = queuedMessageText(msg).replace(/\s+/g, " ").trim();
+    if (text) return text;
+    const atts = Array.isArray(msg.attachments) ? msg.attachments : [];
+    if (atts.length === 1) return atts[0].label || "Attachment";
+    if (atts.length > 1) return atts.length + " attachments";
+    return "Queued message";
+  }
+
+  function closeQueueMenu() {
+    queueMenuOpen = false;
+    if (queueMenuEl) queueMenuEl.hidden = true;
+    if (queueToggleEl) queueToggleEl.setAttribute("aria-expanded", "false");
+  }
+
+  function openQueueMenu() {
+    if (!queueMenuEl || !queueToggleEl) return;
+    if (!getQueuedMessages().length) {
+      closeQueueMenu();
+      return;
+    }
+    // Keep only one composer popover open at a time.
+    if (suggestEl) suggestEl.hidden = true;
+    if (typeof suggest !== "undefined") suggest.open = false;
+    queueMenuOpen = true;
+    queueMenuEl.hidden = false;
+    queueToggleEl.setAttribute("aria-expanded", "true");
+  }
+
+  function toggleQueueMenu() {
+    if (queueMenuOpen) closeQueueMenu();
+    else openQueueMenu();
+  }
+
+  function renderQueue() {
+    const queued = getQueuedMessages();
+    if (!queuePanelEl || !queueToggleEl || !queueToggleLabelEl || !queueListEl) return;
+
+    if (!queued.length) {
+      queuePanelEl.hidden = true;
+      closeQueueMenu();
+      queueListEl.innerHTML = "";
+      queueToggleLabelEl.textContent = "0 queued";
+      return;
+    }
+
+    queuePanelEl.hidden = false;
+    const countLabel = queued.length === 1 ? "1 queued" : queued.length + " queued";
+    const newest = queuePreviewText(queued[queued.length - 1]);
+    const short = newest.length > 42 ? newest.slice(0, 42) + "…" : newest;
+    queueToggleLabelEl.textContent = queued.length === 1 ? short : countLabel;
+    queueToggleEl.title = countLabel + (queued.length === 1 ? "" : " — " + short);
+
+    queueListEl.innerHTML = queued.map(function (msg) {
+      const text = queuedMessageText(msg);
+      const preview = escapeHtml(queuePreviewText(msg));
+      const title = escapeHtml(text.trim() ? "Edit queued message" : "Queued message");
+      const id = escapeHtml(msg.id || "");
+      const attCount = Array.isArray(msg.attachments) ? msg.attachments.length : 0;
+      const attNote = attCount
+        ? '<div class="queue-item-title">' + attCount + (attCount === 1 ? " attachment" : " attachments") + "</div>"
+        : "";
+      return (
+        '<div class="queue-item" role="menuitem" data-id="' + id + '">' +
+          '<button type="button" class="queue-item-main" data-action="edit-queued" data-id="' + id + '" title="' + title + '">' +
+            attNote +
+            '<div class="queue-item-preview">' + preview + '</div>' +
+          '</button>' +
+          '<div class="queue-item-actions">' +
+            '<button type="button" class="queue-item-btn" data-action="edit-queued" data-id="' + id + '" title="Edit">✎</button>' +
+            '<button type="button" class="queue-item-btn danger" data-action="remove-queued" data-id="' + id + '" title="Remove">×</button>' +
+          '</div>' +
+        '</div>'
+      );
+    }).join("");
+
+    if (queueMenuOpen) openQueueMenu();
+    else closeQueueMenu();
+  }
+
+  function applyComposerPrefill(text) {
+    inputEl.value = text == null ? "" : String(text);
+    autosize();
+    inputEl.focus();
+    try {
+      const len = inputEl.value.length;
+      inputEl.setSelectionRange(len, len);
+    } catch (_) {}
+  }
+
+  function recallQueuedMessage(id) {
+    const msgId = String(id || "");
+    if (!msgId) return;
+    const msg = (state.messages || []).find(function (m) { return m.id === msgId && m.queued; });
+    const text = msg ? queuedMessageText(msg) : "";
+    if (msg) {
+      applyComposerPrefill(text);
+      state.messages = state.messages.filter(function (m) { return m.id !== msgId; });
+      closeQueueMenu();
+      render();
+    }
+    vscode.postMessage({ type: "recallQueued", id: msgId, text: text });
+  }
+
+  function removeQueuedMessage(id) {
+    const msgId = String(id || "");
+    if (!msgId) return;
+    const msg = (state.messages || []).find(function (m) { return m.id === msgId && m.queued; });
+    const text = msg ? queuedMessageText(msg) : "";
+    state.messages = (state.messages || []).filter(function (m) { return m.id !== msgId; });
+    if (!getQueuedMessages().length) closeQueueMenu();
+    render();
+    vscode.postMessage({ type: "removeQueued", id: msgId, text: text });
+  }
+
   function send() {
     const text = inputEl.value;
     if (text.trim() === "" && state.attachments.length === 0) return;
@@ -1415,6 +1965,42 @@
   }
 
   sendBtn.addEventListener("click", send);
+
+  if (queueToggleEl) {
+    queueToggleEl.addEventListener("click", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleQueueMenu();
+    });
+  }
+  if (queuePanelEl) {
+    queuePanelEl.addEventListener("click", function (e) {
+      const closeBtn = e.target.closest('[data-action="close-queue-menu"]');
+      if (closeBtn) {
+        e.preventDefault();
+        closeQueueMenu();
+        return;
+      }
+      const actionBtn = e.target.closest('[data-action="edit-queued"], [data-action="remove-queued"]');
+      if (!actionBtn) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const action = actionBtn.getAttribute("data-action");
+      const id = actionBtn.getAttribute("data-id") || "";
+      if (action === "edit-queued") recallQueuedMessage(id);
+      if (action === "remove-queued") removeQueuedMessage(id);
+    });
+  }
+  document.addEventListener("mousedown", function (e) {
+    if (!queueMenuOpen || !queuePanelEl) return;
+    if (queuePanelEl.contains(e.target)) return;
+    closeQueueMenu();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && queueMenuOpen) {
+      closeQueueMenu();
+    }
+  });
 
   if (messagesEl) {
     messagesEl.addEventListener("scroll", function () {
@@ -1508,7 +2094,13 @@
     e.preventDefault();
     e.stopPropagation();
     const filePath = fileBtn.getAttribute("data-path") || "";
-    if (filePath) vscode.postMessage({ type: "openFile", path: filePath });
+    if (!filePath) return true;
+    const lineAttr = fileBtn.getAttribute("data-line");
+    const endAttr = fileBtn.getAttribute("data-end-line");
+    const msg = { type: "openFile", path: filePath };
+    if (lineAttr && /^\d+$/.test(lineAttr)) msg.line = parseInt(lineAttr, 10);
+    if (endAttr && /^\d+$/.test(endAttr)) msg.endLine = parseInt(endAttr, 10);
+    vscode.postMessage(msg);
     return true;
   }
 
@@ -1517,6 +2109,7 @@
   }, true);
 
   messagesEl.addEventListener("click", function (e) {
+    if (handleImagePreviewClick(e)) return;
     if (openFileFromEvent(e)) return;
 
     const link = e.target.closest("a[data-href], a[href]");
@@ -1541,11 +2134,83 @@
     if (action === "insert-code" && text) vscode.postMessage({ type: "insert", text: text });
   });
 
+
+  let imagePreviewPath = "";
+
+  function closeImagePreview() {
+    imagePreviewPath = "";
+    if (imagePreviewImg) {
+      imagePreviewImg.removeAttribute("src");
+      imagePreviewImg.alt = "Preview";
+    }
+    if (imagePreviewEl) {
+      imagePreviewEl.hidden = true;
+      const openBtn = imagePreviewEl.querySelector('[data-action="open-image-file"]');
+      if (openBtn) openBtn.hidden = true;
+    }
+  }
+
+  function openImagePreview(src, path, alt) {
+    const filePath = String(path || "").trim();
+    const dataUrl = String(src || "").trim();
+    if (!dataUrl && filePath) {
+      vscode.postMessage({ type: "openFile", path: filePath });
+      return;
+    }
+    if (!dataUrl || !imagePreviewEl || !imagePreviewImg) return;
+    imagePreviewPath = filePath;
+    imagePreviewImg.src = dataUrl;
+    imagePreviewImg.alt = alt || "Preview";
+    const openBtn = imagePreviewEl.querySelector('[data-action="open-image-file"]');
+    if (openBtn) openBtn.hidden = !filePath;
+    imagePreviewEl.hidden = false;
+  }
+
+  function handleImagePreviewClick(e) {
+    const closeBtn = e.target.closest('[data-action="close-image-preview"]');
+    if (closeBtn) {
+      e.preventDefault();
+      closeImagePreview();
+      return true;
+    }
+    const openBtn = e.target.closest('[data-action="open-image-file"]');
+    if (openBtn) {
+      e.preventDefault();
+      if (imagePreviewPath) {
+        vscode.postMessage({ type: "openFile", path: imagePreviewPath });
+      }
+      return true;
+    }
+    const previewBtn = e.target.closest('[data-action="preview-image"]');
+    if (!previewBtn) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    openImagePreview(
+      previewBtn.getAttribute("data-src") || "",
+      previewBtn.getAttribute("data-path") || "",
+      (previewBtn.querySelector("img") && previewBtn.querySelector("img").alt) || "Preview"
+    );
+    return true;
+  }
+
   attachmentsEl.addEventListener("click", function (e) {
+    if (handleImagePreviewClick(e)) return;
     const btn = e.target.closest("button[data-action='remove-att']");
     if (btn == null) return;
     const id = btn.parentElement && btn.parentElement.getAttribute("data-id");
     if (id) vscode.postMessage({ type: "removeAttachment", id: id });
+  });
+
+  if (imagePreviewEl) {
+    imagePreviewEl.addEventListener("click", function (e) {
+      handleImagePreviewClick(e);
+    });
+  }
+
+  window.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && imagePreviewEl && !imagePreviewEl.hidden) {
+      closeImagePreview();
+    }
   });
 
   if (suggestListEl) {
@@ -1709,6 +2374,10 @@
     if (msg.type === "attachments") {
       state.attachments = msg.attachments || [];
       render();
+      return;
+    }
+    if (msg.type === "composerPrefill") {
+      applyComposerPrefill(msg.text || "");
       return;
     }
     if (msg.type === "config") {

@@ -57,7 +57,8 @@ async function maybePreviewDataUrl(fsPath: string, kind: AttachmentKind): Promis
   }
   try {
     const stat = await fs.stat(fsPath);
-    if (stat.size > 1_500_000) {
+    // Keep chat thumbnails snappy; larger images still open via native preview.
+    if (stat.size > 4_000_000) {
       return undefined;
     }
     const buf = await fs.readFile(fsPath);

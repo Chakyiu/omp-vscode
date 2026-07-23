@@ -119,9 +119,7 @@ button {
   border-left: 1px solid color-mix(in srgb, var(--border) 90%, transparent);
 }
 .collapse-summary {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  display: block;
   min-width: 0;
   cursor: pointer;
   list-style: none;
@@ -140,6 +138,14 @@ button {
   background: color-mix(in srgb, var(--text) 5%, transparent);
   color: var(--text);
 }
+.collapse-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+}
 .collapse-chevron {
   width: 12px;
   height: 12px;
@@ -148,58 +154,94 @@ button {
   transform: rotate(0deg);
   transition: transform 140ms ease;
 }
+.collapse-chevron-spacer {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+}
+.collapse.tool.flat > .collapse-summary {
+  cursor: default;
+}
+.collapse.tool.flat > .collapse-summary:hover {
+  background: transparent;
+}
 .collapse[open] > .collapse-summary .collapse-chevron {
   transform: rotate(90deg);
 }
 .collapse-title {
-  flex: 0 1 auto;
-  max-width: 52%;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: 0 0 auto;
+  overflow: visible;
   white-space: nowrap;
   color: inherit;
 }
 .collapse-meta {
   flex: 1 1 auto;
   min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   color: color-mix(in srgb, var(--muted) 82%, transparent);
   font-weight: 400;
   font-family: var(--mono);
   font-size: 11px;
 }
-.collapse-meta .file-link {
-  display: block;
-  width: 100%;
+.collapse-meta .file-sep {
+  flex: 0 0 auto;
+  opacity: 0.7;
+}
+.collapse-meta .file-link,
+.file-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 100%;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
-  border: none;
-  background: transparent;
-  padding: 0;
+  vertical-align: middle;
+  border: 1px solid color-mix(in srgb, var(--text) 16%, transparent);
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  border-radius: 6px;
+  padding: 1px 7px 1px 5px;
   margin: 0;
-  color: var(--vscode-textLink-foreground, #4ea1ff);
+  color: var(--text);
   font: inherit;
-  font-family: var(--mono);
-  font-size: inherit;
+  font-family: var(--font);
+  font-size: 11.5px;
   font-weight: 500;
+  line-height: 1.35;
   text-align: left;
   cursor: pointer;
   text-decoration: none;
 }
-.collapse-meta .file-link:hover {
-  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground, #4ea1ff));
-  text-decoration: underline;
+.collapse-meta .file-link:hover,
+.file-link:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+  border-color: color-mix(in srgb, var(--text) 28%, transparent);
+  text-decoration: none;
+}
+.file-link-icon {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  opacity: 0.75;
+}
+.file-link-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .tool > .collapse-summary .collapse-meta .file-link {
-  color: var(--vscode-textLink-foreground, #4ea1ff);
+  color: var(--text);
 }
 .tool > .collapse-summary:hover .collapse-meta .file-link {
-  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground, #4ea1ff));
-  text-decoration: underline;
+  color: var(--text);
+  text-decoration: none;
 }
 .collapse-body {
   margin: 4px 0 6px 18px;
@@ -261,12 +303,15 @@ button {
 }
 .badge {
   flex: 0 0 auto;
+  align-self: center;
   margin-left: auto;
+  width: 16px;
   min-width: 16px;
   height: 16px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  line-height: 0;
   font-size: 10px;
   font-weight: 700;
   border-radius: 999px;
@@ -282,19 +327,24 @@ button {
   background: color-mix(in srgb, var(--danger) 14%, transparent);
 }
 .badge.running {
-  color: var(--muted);
-  background: color-mix(in srgb, var(--muted) 14%, transparent);
+  color: var(--link);
+  background: color-mix(in srgb, var(--muted) 12%, transparent);
 }
 .badge-dot {
-  width: 6px;
-  height: 6px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  background: currentColor;
-  animation: badge-pulse 1s ease-in-out infinite;
+  box-sizing: border-box;
+  border: 1.5px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor;
+  background: transparent;
+  display: block;
+  margin: 0;
+  transform-origin: 50% 50%;
+  animation: badge-spin 0.75s linear infinite;
 }
-@keyframes badge-pulse {
-  0%, 100% { opacity: 0.35; transform: scale(0.85); }
-  50% { opacity: 1; transform: scale(1); }
+@keyframes badge-spin {
+  to { transform: rotate(360deg); }
 }
 
 /* ---- code ---- */
@@ -411,16 +461,17 @@ button {
 .att-thumb { width: 16px; height: 16px; border-radius: 4px; object-fit: cover; }
 .att.image {
   padding: 0;
-  border-radius: 10px;
+  border-radius: 8px;
   overflow: hidden;
   position: relative;
-  max-width: 148px;
+  max-width: 88px;
 }
 .att.image .att-thumb {
-  width: 148px;
-  height: 96px;
+  width: 88px;
+  height: 64px;
   border-radius: 0;
   display: block;
+  cursor: zoom-in;
 }
 .att.image button {
   position: absolute;
@@ -439,19 +490,52 @@ button {
 .msg-images {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 8px;
+  gap: 6px;
+  margin-top: 6px;
+}
+.msg-image-btn {
+  display: inline-flex;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  cursor: zoom-in;
+  overflow: hidden;
+  max-width: min(160px, 100%);
+}
+.msg-image-btn:hover {
+  border-color: color-mix(in srgb, var(--text) 28%, transparent);
+}
+.msg-image-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--link) 70%, transparent);
+  outline-offset: 1px;
 }
 .msg-image {
   display: block;
-  max-width: min(320px, 100%);
-  max-height: 240px;
+  max-width: min(160px, 100%);
+  max-height: 112px;
   width: auto;
   height: auto;
-  border-radius: 10px;
-  object-fit: contain;
+  object-fit: cover;
+}
+.msg-image-fallback {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 8px;
   border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--text) 4%, transparent);
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  max-width: 100%;
+}
+.msg-image-fallback:hover {
+  color: var(--text);
+  background: var(--hover);
 }
 .msg-atts {
   display: flex;
@@ -690,18 +774,25 @@ textarea::placeholder { color: var(--muted); }
     var(--vscode-tab-activeBorder, var(--vscode-focusBorder, var(--link)))
   );
 }
+.tab.busy .tab-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
 .tab.busy .tab-title::before {
   content: "";
-  display: inline-block;
+  display: block;
   width: 10px;
   height: 10px;
-  margin-right: 6px;
+  margin: 0;
   border-radius: 50%;
+  box-sizing: border-box;
   border: 1.5px solid color-mix(in srgb, var(--vscode-progressBar-background, var(--link)) 35%, transparent);
   border-top-color: var(--vscode-progressBar-background, var(--link));
   background: transparent;
-  vertical-align: -1px;
-  flex-shrink: 0;
+  flex: 0 0 auto;
+  transform-origin: 50% 50%;
   animation: tab-spin 0.75s linear infinite;
 }
 @keyframes tab-spin {
@@ -872,24 +963,197 @@ textarea::placeholder { color: var(--muted); }
 }
 
 
-/* Queued follow-up prompts while a turn is still running */
-.msg.user.queued {
-  opacity: 0.72;
+/* Cursor-style queued follow-ups (drop-up above composer) */
+.queue-panel {
+  position: relative;
+  display: flex;
+  width: 100%;
+  z-index: 6;
 }
-.msg.user.queued .bubble {
-  border-style: dashed;
+.queue-panel[hidden] { display: none !important; }
+.queue-toggle {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--text) 7%, var(--bg));
+  color: var(--muted);
+  border-radius: 10px;
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  cursor: pointer;
+  text-align: left;
 }
-.queue-badge {
-  align-self: flex-start;
+.queue-toggle:hover,
+.queue-toggle[aria-expanded="true"] {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 11%, var(--bg));
+  border-color: color-mix(in srgb, var(--text) 22%, transparent);
+}
+.queue-toggle-icon {
+  font-size: 11px;
+  opacity: 0.8;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+.queue-toggle-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.queue-toggle .chev {
+  margin-left: auto;
+  font-size: 10px;
+  opacity: 0.8;
+  transition: transform 120ms ease;
+  flex: 0 0 auto;
+}
+.queue-toggle[aria-expanded="true"] .chev {
+  transform: rotate(180deg);
+}
+.queue-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 8;
+  max-height: 260px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  /* Force an opaque surface even when VS Code theme vars are translucent. */
+  background-color: var(--bg);
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--text) 6%, transparent),
+    color-mix(in srgb, var(--text) 6%, transparent)
+  );
+  box-shadow: 0 12px 32px color-mix(in srgb, #000 50%, transparent);
+}
+.queue-menu[hidden] { display: none !important; }
+.queue-menu-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px 4px 12px;
   font-size: 11px;
   font-weight: 600;
+  color: var(--muted);
   letter-spacing: 0.02em;
-  color: var(--muted, color-mix(in srgb, var(--text) 65%, transparent));
-  background: color-mix(in srgb, var(--text) 8%, transparent);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 2px 8px;
-  margin-bottom: 2px;
+  text-transform: uppercase;
+}
+.queue-menu-close {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.queue-menu-close:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+.queue-list {
+  overflow: auto;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.queue-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  border-radius: 8px;
+  padding: 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+.queue-item:hover {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+.queue-item-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 0;
+}
+.queue-item-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.queue-item-preview {
+  font-size: 11.5px;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.35;
+}
+.queue-item-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+.queue-item-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.queue-item-btn:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+}
+.queue-item-btn.danger:hover {
+  color: var(--danger, #f44);
+  background: color-mix(in srgb, var(--danger, #f44) 14%, transparent);
 }
 .primary.queue {
   background: color-mix(in srgb, var(--text) 14%, transparent);
@@ -897,15 +1161,79 @@ textarea::placeholder { color: var(--muted); }
 }
 
 
+
+/* Sticky active user question while a turn is running */
+.active-question {
+  flex: 0 0 auto;
+  z-index: 11;
+  padding: 8px 12px 6px;
+  background-color: var(--bg);
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--text) 3%, transparent),
+    color-mix(in srgb, var(--text) 3%, transparent)
+  );
+  border-bottom: 1px solid var(--border);
+}
+.active-question[hidden] { display: none !important; }
+.active-question-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background-color: var(--bg);
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--text) 6%, transparent),
+    color-mix(in srgb, var(--text) 6%, transparent)
+  );
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 96px;
+  overflow: hidden;
+}
+.active-question-kicker {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.active-question-text {
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 /* Interactive omp extension_ui_request (confirm / select / input) */
 .ui-question {
   flex: 0 0 auto;
-  padding: 0 12px 8px;
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  padding: 8px 12px;
+  /* Keep the prompt pinned at the top of the chat room. */
+  background-color: var(--bg);
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--text) 4%, transparent),
+    color-mix(in srgb, var(--text) 4%, transparent)
+  );
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 8px 18px color-mix(in srgb, #000 22%, transparent);
 }
+.ui-question[hidden] { display: none !important; }
 .ui-question-card {
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: color-mix(in srgb, var(--text) 5%, var(--bg, transparent));
+  background-color: var(--bg);
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--text) 7%, transparent),
+    color-mix(in srgb, var(--text) 7%, transparent)
+  );
   padding: 12px;
   display: flex;
   flex-direction: column;
@@ -1015,4 +1343,73 @@ textarea::placeholder { color: var(--muted); }
 }
 .ui-q-btn.primary:hover {
   opacity: 0.92;
+}
+
+/* ---- image preview lightbox ---- */
+.image-preview {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+}
+.image-preview[hidden] { display: none !important; }
+.image-preview-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  backdrop-filter: blur(3px);
+  cursor: zoom-out;
+}
+.image-preview-card {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(100%, 520px);
+  max-height: min(100%, 720px);
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  box-shadow: 0 12px 40px color-mix(in srgb, #000 35%, transparent);
+}
+.image-preview-card img {
+  display: block;
+  max-width: 100%;
+  max-height: min(70vh, 560px);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+.image-preview-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.image-preview-actions button {
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.image-preview-actions button:hover {
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+}
+.image-preview-actions button.primary {
+  background: var(--text);
+  color: var(--bg, #111);
+  border-color: transparent;
 }
