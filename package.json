@@ -1,0 +1,237 @@
+{
+  "name": "oh-my-pi-chat",
+  "displayName": "Oh My Pi Chat",
+  "description": "Copilot/Cursor-style chat sidebar for Oh My Pi (omp) in VS Code",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Other"
+  ],
+  "keywords": [
+    "omp",
+    "oh-my-pi",
+    "ai",
+    "chat",
+    "coding-agent"
+  ],
+  "activationEvents": [
+    "onView:ompChat.sidebar",
+    "onCommand:ompChat.open",
+    "onCommand:ompChat.newChat",
+    "onCommand:ompChat.sendSelection",
+    "onCommand:ompChat.attachFiles",
+    "onCommand:ompChat.attachFolder",
+    "onCommand:ompChat.attachMenu",
+    "onCommand:ompChat.attachExplorer"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ompChat",
+          "title": "Oh My Pi",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "ompChat": [
+        {
+          "type": "webview",
+          "id": "ompChat.sidebar",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "ompChat.open",
+        "title": "Oh My Pi: Open Chat",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "ompChat.newChat",
+        "title": "Oh My Pi: New Chat",
+        "icon": "$(add)"
+      },
+      {
+        "command": "ompChat.stop",
+        "title": "Oh My Pi: Stop Generation",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "ompChat.sendSelection",
+        "title": "Oh My Pi: Send Selection to Chat"
+      },
+      {
+        "command": "ompChat.attachCurrentFile",
+        "title": "Oh My Pi: Attach Current File"
+      },
+      {
+        "command": "ompChat.restartSession",
+        "title": "Oh My Pi: Restart Session"
+      },
+      {
+        "command": "ompChat.attachFiles",
+        "title": "Oh My Pi: Attach Files",
+        "icon": "$(attach)"
+      },
+      {
+        "command": "ompChat.attachFolder",
+        "title": "Oh My Pi: Attach Folder",
+        "icon": "$(folder)"
+      },
+      {
+        "command": "ompChat.attachMenu",
+        "title": "Oh My Pi: Attach\u2026",
+        "icon": "$(attach)"
+      },
+      {
+        "command": "ompChat.attachExplorer",
+        "title": "Oh My Pi: Attach to Chat",
+        "icon": "$(attach)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "ompChat.newChat",
+          "when": "view == ompChat.sidebar",
+          "group": "navigation@1"
+        },
+        {
+          "command": "ompChat.stop",
+          "when": "view == ompChat.sidebar",
+          "group": "navigation@2"
+        },
+        {
+          "command": "ompChat.restartSession",
+          "when": "view == ompChat.sidebar",
+          "group": "navigation@3"
+        },
+        {
+          "command": "ompChat.attachMenu",
+          "when": "view == ompChat.sidebar",
+          "group": "navigation@0"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "ompChat.sendSelection",
+          "when": "editorHasSelection",
+          "group": "ompChat@1"
+        },
+        {
+          "command": "ompChat.attachCurrentFile",
+          "group": "ompChat@2"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "ompChat.attachExplorer",
+          "group": "ompChat@1"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Oh My Pi Chat",
+      "properties": {
+        "ompChat.ompPath": {
+          "type": "string",
+          "default": "omp",
+          "description": "Path to the omp executable."
+        },
+        "ompChat.model": {
+          "type": "string",
+          "default": "",
+          "description": "Optional model override (fuzzy match, e.g. opus, gpt-5.2)."
+        },
+        "ompChat.thinking": {
+          "type": "string",
+          "enum": [
+            "",
+            "off",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+            "auto"
+          ],
+          "default": "",
+          "description": "Optional thinking level passed to omp."
+        },
+        "ompChat.approvalMode": {
+          "type": "string",
+          "enum": [
+            "",
+            "always-ask",
+            "write",
+            "yolo"
+          ],
+          "default": "",
+          "description": "Optional tools.approvalMode override for this session."
+        },
+        "ompChat.autoApprove": {
+          "type": "boolean",
+          "default": false,
+          "description": "Pass --auto-approve to omp (skip approval prompts)."
+        },
+        "ompChat.continueLastSession": {
+          "type": "boolean",
+          "default": false,
+          "description": "Continue the previous omp session when starting the chat bridge."
+        },
+        "ompChat.extraArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra CLI args appended when spawning omp --mode rpc."
+        },
+        "ompChat.showThinking": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show model thinking blocks in the chat UI."
+        }
+      }
+    },
+    "keybindings": [
+      {
+        "command": "ompChat.open",
+        "key": "ctrl+shift+;",
+        "mac": "cmd+shift+;"
+      },
+      {
+        "command": "ompChat.sendSelection",
+        "key": "ctrl+shift+'",
+        "mac": "cmd+shift+'",
+        "when": "editorTextFocus && editorHasSelection"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "compile": "tsc -p tsconfig.json --noEmit",
+    "package": "vsce package --no-dependencies --allow-missing-repository",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.3.2",
+    "esbuild": "^0.25.1",
+    "typescript": "^5.8.2"
+  }
+}
