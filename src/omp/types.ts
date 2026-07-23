@@ -32,6 +32,8 @@ export interface ChatMessage {
   parts: MessagePart[];
   createdAt: number;
   streaming?: boolean;
+  /** Waiting to send until the current turn finishes. */
+  queued?: boolean;
   /** Attachments shown in the transcript (e.g. image previews). */
   attachments?: Attachment[];
 }

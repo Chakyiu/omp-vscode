@@ -163,6 +163,8 @@ export class SessionManager {
   private sessionModel: SessionModelInfo | null = null;
   private sessionId: string | undefined;
   private restoringHistory = false;
+  /** Prompts waiting for the current turn to finish before being sent. */
+  private pendingPrompts: Array<{ id: string; composed: string }> = [];
   private readonly _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChange = this._onDidChange.event;
 
@@ -250,6 +252,7 @@ export class SessionManager {
 
   async start(overrides?: Partial<OmpClientOptions>): Promise<void> {
     await this.disposeClient();
+    this.pendingPrompts = [];
     this.setStatus({ state: "starting", detail: "Launching omp…" });
 
     const options = this.readConfig(overrides);
@@ -311,6 +314,7 @@ export class SessionManager {
     this.messages = [];
     this.currentAssistantId = undefined;
     this.attachments = [];
+    this.pendingPrompts = [];
     this.contextUsage = null;
     this.sessionModel = null;
     this.sessionId = undefined;
@@ -370,6 +374,7 @@ export class SessionManager {
 
     const composed = this.composePrompt(trimmed);
     const messageAttachments = this.attachments.map((att) => ({ ...att }));
+    const busy = this.status.state === "busy";
     const userMessage: ChatMessage = {
       id: randomUUID(),
       role: "user",
@@ -377,98 +382,23 @@ export class SessionManager {
       // Keep the typed text for display; @path mentions stay only in the omp prompt.
       parts: trimmed ? [{ kind: "text", text: trimmed }] : [],
       attachments: messageAttachments,
+      queued: busy,
     };
     this.messages = [...this.messages, userMessage];
     this.attachments = [];
-    this.currentAssistantId = undefined;
-    this.setStatus({ state: "busy", detail: "Generating…" });
-    this.notify();
 
-    this.client.prompt(composed);
-  }
-
-  /**
-   * Send a prompt and wait for the turn to finish, returning the assistant text.
-   * Unlike {@link send}, this resolves only after the session is idle again.
-   */
-  async query(text: string, timeoutMs = 600_000): Promise<string> {
-    const trimmed = text.trim();
-    if (!trimmed && this.attachments.length === 0) {
-      return this.getLastAssistantText();
+    if (busy) {
+      this.pendingPrompts.push({ id: userMessage.id, composed });
+      this.notify();
+      return;
     }
 
-    const turn = this.waitForTurn(timeoutMs);
-    await this.send(text);
-    await turn;
-
-    const local = this.getLastAssistantText();
-    if (local) {
-      return local;
-    }
-
-    try {
-      return (await this.client?.getLastAssistantText()) ?? "";
-    } catch {
-      return "";
-    }
-  }
-
-  /** Visible text from the most recent assistant message in this session. */
-  getLastAssistantText(): string {
-    for (let i = this.messages.length - 1; i >= 0; i -= 1) {
-      const message = this.messages[i];
-      if (message.role !== "assistant") {
-        continue;
-      }
-      return message.parts
-        .filter((part): part is Extract<MessagePart, { kind: "text" }> => part.kind === "text")
-        .map((part) => part.text)
-        .join("");
-    }
-    return "";
-  }
-
-  private waitForTurn(timeoutMs: number): Promise<void> {
-    return new Promise((resolve, reject) => {
-      let seenBusy = this.status.state === "busy";
-      let settled = false;
-      const finish = (fn: () => void) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        subscription.dispose();
-        clearTimeout(timer);
-        fn();
-      };
-
-      const subscription = this.onDidChange(() => {
-        if (this.status.state === "busy") {
-          seenBusy = true;
-          return;
-        }
-        if (!seenBusy) {
-          return;
-        }
-        if (this.status.state === "ready") {
-          finish(() => resolve());
-          return;
-        }
-        if (this.status.state === "error" || this.status.state === "stopped") {
-          finish(() =>
-            reject(new Error(this.status.detail || `Session ${this.status.state}`)),
-          );
-        }
-      });
-
-      const timer = setTimeout(() => {
-        finish(() => reject(new Error("Timed out waiting for session response")));
-      }, timeoutMs);
-    });
+    this.dispatchPrompt(composed);
   }
 
   abort(): void {
     this.client?.abort();
+    this.clearQueuedPrompts();
     if (this.currentAssistantId) {
       this.patchMessage(this.currentAssistantId, (msg) => ({
         ...msg,
@@ -478,6 +408,90 @@ export class SessionManager {
     if (this.status.state === "busy") {
       this.setStatus({ state: "ready", detail: "Stopped" });
     }
+  }
+
+  private dispatchPrompt(composed: string): void {
+    if (!this.client?.isReady) {
+      throw new Error("omp session is not ready");
+    }
+    this.currentAssistantId = undefined;
+    this.setStatus({ state: "busy", detail: "Generating…" });
+    this.notify();
+    this.client.prompt(composed);
+  }
+
+  private clearQueuedPrompts(): void {
+    const queuedIds = new Set(this.pendingPrompts.map((item) => item.id));
+    this.pendingPrompts = [];
+    const nextMessages = this.messages.filter(
+      (message) => !queuedIds.has(message.id) && !message.queued,
+    );
+    if (nextMessages.length !== this.messages.length) {
+      this.messages = nextMessages;
+      this.notify();
+    }
+  }
+
+  private flushQueuedPrompt(): void {
+    const next = this.pendingPrompts.shift();
+    if (!next) {
+      return;
+    }
+    this.patchMessage(next.id, (msg) => ({
+      ...msg,
+      queued: false,
+    }));
+    try {
+      this.dispatchPrompt(next.composed);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.messages = [
+        ...this.messages,
+        {
+          id: randomUUID(),
+          role: "system",
+          createdAt: Date.now(),
+          parts: [{ kind: "text", text: message }],
+        },
+      ];
+      this.setStatus({ state: "error", detail: message });
+    }
+  }
+
+  private markTurnComplete(): void {
+    // Ignore duplicate settle attempts once we have already left the busy state.
+    if (this.status.state !== "busy") {
+      return;
+    }
+    if (this.currentAssistantId) {
+      this.patchMessage(this.currentAssistantId, (msg) => {
+        const parts = msg.parts.map((part) => {
+          if (part.kind !== "thinking") {
+            return part;
+          }
+          if (part.streaming === false && part.endedAt) {
+            return part;
+          }
+          return {
+            ...part,
+            streaming: false,
+            endedAt: part.endedAt ?? Date.now(),
+          };
+        });
+        return {
+          ...msg,
+          streaming: false,
+          parts,
+        };
+      });
+    }
+    this.currentAssistantId = undefined;
+    if (this.pendingPrompts.length > 0) {
+      this.flushQueuedPrompt();
+      return;
+    }
+    this.setStatus({ state: "ready", detail: "Ready" });
+    void this.refreshSessionState();
   }
 
   private composePrompt(userText: string): string {
@@ -703,8 +717,7 @@ export class SessionManager {
       }
       case "prompt_result": {
         if (event.agentInvoked === false && this.status.state === "busy") {
-          this.currentAssistantId = undefined;
-          this.setStatus({ state: "ready", detail: "Ready" });
+          this.markTurnComplete();
         }
         break;
       }
@@ -729,13 +742,13 @@ export class SessionManager {
           (event.data as Record<string, unknown> | undefined)?.agentInvoked === false &&
           this.status.state === "busy"
         ) {
-          this.currentAssistantId = undefined;
-          this.setStatus({ state: "ready", detail: "Ready" });
+          this.markTurnComplete();
         }
         break;
       }
       case "turn_end":
-      case "agent_end":
+        // Visual end-of-turn only. Queue flush waits for agent_end so a
+        // follow-up prompt isn't settled by a stale turn_end.
         if (this.currentAssistantId) {
           this.patchMessage(this.currentAssistantId, (msg) => {
             const parts = msg.parts.map((part) => {
@@ -758,9 +771,9 @@ export class SessionManager {
             };
           });
         }
-        this.currentAssistantId = undefined;
-        this.setStatus({ state: "ready", detail: "Ready" });
-        void this.refreshSessionState();
+        break;
+      case "agent_end":
+        this.markTurnComplete();
         break;
       case "prompt_error":
       case "error": {

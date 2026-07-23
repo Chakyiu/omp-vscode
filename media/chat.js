@@ -768,8 +768,11 @@
         ? `<div class="bubble streaming"></div>`
         : "";
 
-    return `<article class="msg ${msg.role}" data-id="${msg.id}">
+    const queued = msg.queued ? " queued" : "";
+    const queuedBadge = msg.queued ? '<div class="queue-badge">Queued</div>' : "";
+    return `<article class="msg ${msg.role}${queued}" data-id="${msg.id}">
       <div class="role">${msg.role}</div>
+      ${queuedBadge}
       ${partsHtml || fallback}
       ${attachmentsHtml}
     </article>`;
@@ -963,8 +966,11 @@
       const messages = state.messages;
       const busy = status.state === "busy";
       stopBtn.hidden = notBusy();
-      sendBtn.disabled = busy || status.state === "starting";
-      sendBtn.hidden = busy;
+      sendBtn.disabled = status.state === "starting";
+      sendBtn.hidden = false;
+      sendBtn.title = busy ? "Queue" : "Send";
+      sendBtn.setAttribute("aria-label", busy ? "Queue" : "Send");
+      sendBtn.classList.toggle("queue", busy);
 
       const hasMessages = messages.length > 0;
       emptyEl.classList.toggle("visible", hasMessages === false);
@@ -1184,14 +1190,21 @@
     const text = inputEl.value;
     if (text.trim() === "" && state.attachments.length === 0) return;
     stickToBottom = true;
-    if (text.trim()) {
+    const busy = state.status.state === "busy";
+    if (text.trim() || state.attachments.length) {
       state.messages = state.messages.concat({
         id: `local-${Date.now()}`,
         role: "user",
         createdAt: Date.now(),
-        parts: [{ kind: "text", text: text }],
+        parts: text.trim() ? [{ kind: "text", text: text }] : [],
+        attachments: state.attachments.slice(),
+        queued: busy,
       });
-      state.status = { state: "busy", detail: "Sending…" };
+      if (!busy) {
+        state.status = { state: "busy", detail: "Sending…" };
+      }
+      // Clear local attachment chips immediately; host owns the real send/queue.
+      state.attachments = [];
       render();
       scrollMessagesToBottom(true);
     }

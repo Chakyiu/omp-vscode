@@ -870,3 +870,28 @@ textarea::placeholder { color: var(--muted); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+
+/* Queued follow-up prompts while a turn is still running */
+.msg.user.queued {
+  opacity: 0.72;
+}
+.msg.user.queued .bubble {
+  border-style: dashed;
+}
+.queue-badge {
+  align-self: flex-start;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--muted, color-mix(in srgb, var(--text) 65%, transparent));
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  margin-bottom: 2px;
+}
+.primary.queue {
+  background: color-mix(in srgb, var(--text) 14%, transparent);
+  color: var(--text);
+}

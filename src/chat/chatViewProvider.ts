@@ -425,7 +425,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           <div id="suggestList" class="suggest-list" role="listbox"></div>
         </div>
         <div id="attachments" class="attachments"></div>
-        <textarea id="input" rows="2" placeholder="Plan, @ for context, / for commands"></textarea>
+        <textarea id="input" rows="2" placeholder="Plan, @ for context, / for commands — Enter queues while generating"></textarea>
         <div class="composer-actions">
           <div class="left-actions">
             <button id="modelBtn" class="pill" title="Select model">

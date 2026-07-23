@@ -321,14 +321,6 @@ export class TabManager {
     await this.active().send(text);
   }
 
-  async query(text: string, timeoutMs?: number): Promise<string> {
-    return this.active().query(text, timeoutMs);
-  }
-
-  getLastAssistantText(): string {
-    return this.active().getLastAssistantText();
-  }
-
   addAttachment(attachment: Omit<Attachment, "id"> & { id?: string }): void {
     this.active().addAttachment(attachment);
   }
