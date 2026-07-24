@@ -1452,12 +1452,21 @@
       const status = state.status;
       const messages = state.messages;
       const busy = status.state === "busy";
+      // The session is only usable once it reaches "ready" (or "busy", where
+      // the composer queues instead of sending). While still "starting",
+      // "error", or "stopped" the extension has not loaded omp yet, so every
+      // interaction control stays disabled until the host signals readiness.
+      const interactable = status.state === "ready" || busy;
       stopBtn.hidden = notBusy();
-      sendBtn.disabled = status.state === "starting";
+      sendBtn.disabled = !interactable;
       sendBtn.hidden = false;
       sendBtn.title = busy ? "Queue" : "Send";
       sendBtn.setAttribute("aria-label", busy ? "Queue" : "Send");
       sendBtn.classList.toggle("queue", busy);
+      inputEl.disabled = !interactable;
+      [newChatBtn, historyBtn, moreBtn, attachBtn, attachFilesBtn, attachFolderBtn, modelBtn, modeBtn, usageBtn, queueToggleEl]
+        .filter(Boolean)
+        .forEach(function (btn) { btn.disabled = !interactable; });
 
       const transcript = getTranscriptMessages();
       const hasMessages = transcript.length > 0;

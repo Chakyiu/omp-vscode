@@ -171,6 +171,17 @@ export class SessionManager {
     const client = new OmpRpcClient(options);
     this.client = client;
 
+    // Capture stderr during this attempt so we can distinguish a stale
+    // --resume target (omp exits before ready with "not found") from a
+    // genuinely broken omp install, and fall back to a fresh session.
+    const attemptStderr: string[] = [];
+    const stderrCollector = (line: string) => {
+      attemptStderr.push(line);
+    };
+    client.on("stderr", stderrCollector);
+    const isStaleResume = (): boolean =>
+      Boolean(options.resumeSessionId) && /not found/i.test(attemptStderr.join("\n"));
+
     client.on("ready", () => {
       this.setStatus({ state: "ready", detail: "Connected to omp" });
       void this.onSessionReady(options);
@@ -183,6 +194,12 @@ export class SessionManager {
 
     client.on("exit", (code) => {
       if (this.status.state !== "stopped") {
+        // A stale --resume target exits before ready; start() recovers with a
+        // fresh session below. Keep this out of the error log and don't flash
+        // an error status for an expected, self-healing transition.
+        if (isStaleResume()) {
+          return;
+        }
         logError(`omp exited (code ${code ?? "null"})`);
         this.setStatus({
           state: "error",
@@ -193,18 +210,36 @@ export class SessionManager {
 
     client.on("stderr", (line) => {
       // Surface interesting failures without spamming every line.
-      if (/error|fail|not found|ENOENT/i.test(line)) {
+      if (/error|fail|not found/i.test(line)) {
+        // The stale-resume "Session not found" line is handled by the
+        // fresh-session fallback in the catch below; the fallback logs its
+        // own warning, so don't double-log or flicker an error status here.
+        if (options.resumeSessionId && /not found/i.test(line)) {
+          return;
+        }
         logWarn(`omp stderr: ${line.slice(0, 500)}`);
         this.setStatus({ state: "error", detail: line.slice(0, 240) });
       }
     });
 
-    client.on("event", (event) => this.handleEvent(event));
-
     try {
       await client.start();
     } catch (err) {
+      client.off("stderr", stderrCollector);
       const message = err instanceof Error ? err.message : String(err);
+      // omp exits before emitting "ready" when --resume points at a session
+      // that no longer exists (deleted / expired / different state dir).
+      // Drop the stale id and start a brand-new session once so the tab
+      // recovers instead of staying stuck in error.
+      if (isStaleResume()) {
+        logWarn(
+          `omp session ${options.resumeSessionId} not found; starting a fresh session.`,
+        );
+        this.sessionId = undefined;
+        this.sessionIdStore?.set(undefined);
+        await this.start({ continueLastSession: false, resumeSessionId: undefined });
+        return;
+      }
       logError("Failed to start omp RPC session", err);
       this.setStatus({
         state: "error",
@@ -212,6 +247,7 @@ export class SessionManager {
       });
       throw err;
     }
+    client.off("stderr", stderrCollector);
   }
 
   async restart(): Promise<void> {
