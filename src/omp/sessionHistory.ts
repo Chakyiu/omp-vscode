@@ -174,6 +174,14 @@ function createdAtOf(raw: Record<string, unknown>, fallback: number): number {
  * Used when RPC history exceeds the 1 MiB stdout frame limit.
  */
 export async function messagesFromSessionFile(filePath: string): Promise<unknown[]> {
+  // A freshly created omp session reports its `.jsonl` path via state before the
+  // file is flushed to disk (VS Code restart races session-file creation). Treat
+  // a missing/transient file as "no history yet" rather than a fatal error.
+  try {
+    await fs.promises.access(filePath, fs.constants.R_OK);
+  } catch {
+    return [];
+  }
   const stream = fs.createReadStream(filePath, { encoding: "utf8" });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   const messages: unknown[] = [];
