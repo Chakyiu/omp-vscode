@@ -1,19 +1,21 @@
-import * as vscode from "vscode";
 import { randomUUID } from "crypto";
+import * as vscode from "vscode";
+import { logError, logWarn } from "./errorLog";
+import { preloadOmpModels } from "./modelCatalog";
 import { OmpRpcClient } from "./rpcClient";
 import { chatMessagesFromOmp, messagesFromSessionFile } from "./sessionHistory";
-import { logError, logWarn } from "./errorLog";
 import { logToolFileTouch } from "./toolFileLog";
 import { collectToolFileRefs, collectToolPaths, preview } from "./toolPaths";
 import type {
   Attachment,
   ChatMessage,
   ContextUsage,
-  MessagePart, TextPart,
+  MessagePart,
   OmpClientOptions,
   OmpRpcEvent,
   SessionModelInfo,
   SessionStatus,
+  TextPart,
   ToolCallPart,
   ToolFileRef,
   UiQuestion,
@@ -234,9 +236,7 @@ export class SessionManager {
       // Drop the stale id and start a brand-new session once so the tab
       // recovers instead of staying stuck in error.
       if (isStaleResume()) {
-        logWarn(
-          `omp session ${options.resumeSessionId} not found; starting a fresh session.`,
-        );
+        logWarn(`omp session ${options.resumeSessionId} not found; starting a fresh session.`);
         this.sessionId = undefined;
         this.sessionIdStore?.set(undefined);
         await this.start({ continueLastSession: false, resumeSessionId: undefined });
@@ -353,7 +353,10 @@ export class SessionManager {
   }
 
   /** Pull a queued prompt back into the composer (removes it from the queue). */
-  recallQueued(id: string, textHint?: string): { text: string; attachments: Attachment[] } | undefined {
+  recallQueued(
+    id: string,
+    textHint?: string,
+  ): { text: string; attachments: Attachment[] } | undefined {
     const recalled = this.takeQueued(id, textHint);
     if (!recalled) {
       return undefined;
@@ -414,22 +417,24 @@ export class SessionManager {
     // the latest queued prompt, optionally matched by text.
     if (pendingIdx < 0 && messageIdx < 0) {
       if (hint) {
-        pendingIdx = [...this.pendingPrompts]
-          .map((item, idx) => ({ item, idx }))
-          .reverse()
-          .find((entry) => entry.item.text.trim() === hint)?.idx ?? -1;
-        messageIdx = [...this.messages]
-          .map((message, idx) => ({ message, idx }))
-          .reverse()
-          .find((entry) => {
-            if (!entry.message.queued) return false;
-            const text = entry.message.parts
-              .filter((part): part is TextPart => part.kind === "text")
-              .map((part) => part.text)
-              .join("\n")
-              .trim();
-            return text === hint;
-          })?.idx ?? -1;
+        pendingIdx =
+          [...this.pendingPrompts]
+            .map((item, idx) => ({ item, idx }))
+            .reverse()
+            .find((entry) => entry.item.text.trim() === hint)?.idx ?? -1;
+        messageIdx =
+          [...this.messages]
+            .map((message, idx) => ({ message, idx }))
+            .reverse()
+            .find((entry) => {
+              if (!entry.message.queued) return false;
+              const text = entry.message.parts
+                .filter((part): part is TextPart => part.kind === "text")
+                .map((part) => part.text)
+                .join("\n")
+                .trim();
+              return text === hint;
+            })?.idx ?? -1;
       }
       if (pendingIdx < 0 && messageIdx < 0 && (rawId.startsWith("local-") || !rawId)) {
         pendingIdx = this.pendingPrompts.length ? this.pendingPrompts.length - 1 : -1;
@@ -534,7 +539,6 @@ export class SessionManager {
       this.setStatus({ state: "error", detail: message });
     }
   }
-
 
   private applyAssistantTimingMeta(raw: unknown): void {
     if (!raw || typeof raw !== "object" || !this.currentAssistantId) {
@@ -735,9 +739,7 @@ export class SessionManager {
       const startedAt = part.startedAt ?? this.thinkingStartedAt ?? at;
       const endedAt = part.endedAt ?? at;
       const measured = Math.max(0, endedAt - startedAt);
-      const durationMs =
-        part.durationMs ??
-        (measured >= 1000 ? measured : undefined);
+      const durationMs = part.durationMs ?? (measured >= 1000 ? measured : undefined);
       parts[i] = {
         ...part,
         streaming: false,
@@ -818,7 +820,7 @@ export class SessionManager {
         nextRefs = partial.fileRefs ?? current.fileRefs ?? [];
         nextPaths =
           partial.filePaths ??
-          (nextRefs.length ? nextRefs.map((ref) => ref.path) : current.filePaths ?? []);
+          (nextRefs.length ? nextRefs.map((ref) => ref.path) : (current.filePaths ?? []));
         parts[idx] = {
           ...current,
           ...partial,
@@ -925,7 +927,12 @@ export class SessionManager {
           id,
           status: failed ? "error" : "done",
           outputPreview: preview(
-            event.result ?? event.output ?? event.error ?? data?.result ?? data?.output ?? data?.error,
+            event.result ??
+              event.output ??
+              event.error ??
+              data?.result ??
+              data?.output ??
+              data?.error,
           ),
         });
         break;
@@ -1119,6 +1126,13 @@ export class SessionManager {
     if (this.messages.length === 0) {
       await this.hydrateMessagesFromSession();
     }
+    // A ready session means omp is reachable now. Warm the model cache if the
+    // startup preload missed (e.g. omp wasn't on PATH at activate time); a cache
+    // hit returns instantly so this is cheap on every session.
+    const ompPath = this.readConfig().ompPath;
+    void preloadOmpModels(ompPath).catch(() => {
+      // Picker falls back to a fresh fetch on miss.
+    });
   }
 
   private async hydrateMessagesFromSession(): Promise<void> {
@@ -1219,7 +1233,6 @@ export class SessionManager {
     }
   }
 
-
   answerUiQuestion(
     id: string,
     answer: { confirmed?: boolean; value?: string; cancelled?: boolean; timedOut?: boolean },
@@ -1317,12 +1330,7 @@ export class SessionManager {
       return;
     }
 
-    if (
-      method !== "select" &&
-      method !== "confirm" &&
-      method !== "input" &&
-      method !== "editor"
-    ) {
+    if (method !== "select" && method !== "confirm" && method !== "input" && method !== "editor") {
       // Unknown interactive method — cancel so omp does not hang.
       try {
         this.client?.respondExtensionUi(id, { cancelled: true });
@@ -1356,10 +1364,7 @@ export class SessionManager {
 
     // Replace any existing question with the same id.
     this.clearUiQuestionTimer(id);
-    this.pendingUiQuestions = [
-      ...this.pendingUiQuestions.filter((q) => q.id !== id),
-      question,
-    ];
+    this.pendingUiQuestions = [...this.pendingUiQuestions.filter((q) => q.id !== id), question];
 
     if (timeoutMs) {
       const timer = setTimeout(() => {
