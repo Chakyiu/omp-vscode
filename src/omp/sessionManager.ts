@@ -222,6 +222,8 @@ export class SessionManager {
       }
     });
 
+    client.on("event", (event) => this.handleEvent(event));
+
     try {
       await client.start();
     } catch (err) {
