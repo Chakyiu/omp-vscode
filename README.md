@@ -7,6 +7,7 @@ It launches a local `omp --mode rpc` session and streams replies, thinking, and 
 ## Features
 
 - Multi-tab chats (each tab is its own `omp` session)
+- Right-click a chat tab to view / export / copy the full session as plain text
 - Restores all open omp chat tabs/sessions after VS Code restarts or force-quits
 - History button lists all past omp sessions for the workspace and can resume any of them
 

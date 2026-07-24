@@ -352,6 +352,32 @@ export class TabManager {
     return this.active().getMessages();
   }
 
+  getTabTitle(id: string): string | undefined {
+    const tab = this.tabs.get(id);
+    if (!tab) {
+      return undefined;
+    }
+    this.syncTitle(tab);
+    return tab.title;
+  }
+
+  getSessionIdForTab(id: string): string | undefined {
+    const fromMap = this.tabSessionIds.get(id)?.trim();
+    if (fromMap) {
+      return fromMap;
+    }
+    return this.tabs.get(id)?.session.getSessionId();
+  }
+
+  /** Load transcript for a specific tab without forcing it active. */
+  async getMessagesForTab(id: string): Promise<ChatMessage[] | undefined> {
+    const tab = this.tabs.get(id);
+    if (!tab) {
+      return undefined;
+    }
+    return tab.session.ensureMessagesLoaded();
+  }
+
   getAttachments(): Attachment[] {
     return this.active().getAttachments();
   }

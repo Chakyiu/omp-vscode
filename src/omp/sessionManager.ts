@@ -60,6 +60,32 @@ export class SessionManager {
     return this.messages;
   }
 
+  getSessionId(): string | undefined {
+    const id = this.sessionId ?? this.sessionIdStore?.get();
+    const trimmed = id?.trim();
+    return trimmed || undefined;
+  }
+
+  /**
+   * Ensure the omp session is running and the local transcript is hydrated.
+   * Safe to call for inactive tabs before view/export.
+   */
+  async ensureMessagesLoaded(): Promise<ChatMessage[]> {
+    await this.ensureStarted();
+    // onSessionReady may still be hydrating after start resolves.
+    const deadline = Date.now() + 15_000;
+    while (this.restoringHistory && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+    if (this.messages.length === 0) {
+      await this.hydrateMessagesFromSession();
+    }
+    while (this.restoringHistory && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+    return this.messages;
+  }
+
   getAttachments(): Attachment[] {
     return this.attachments;
   }

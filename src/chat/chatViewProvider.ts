@@ -2,6 +2,10 @@ import * as vscode from "vscode";
 import { AttachmentService } from "../omp/attachmentService";
 import { pickMode, pickModel } from "../omp/modelCatalog";
 import { formatSessionWhen, listOmpSessions } from "../omp/sessionCatalog";
+import {
+  formatSessionPlainText,
+  suggestExportFileName,
+} from "../omp/sessionTranscript";
 import type { TabManager } from "../omp/tabManager";
 import { logError, logWarn, showErrorLog } from "../omp/errorLog";
 import { showToolFileLog } from "../omp/toolFileLog";
@@ -154,6 +158,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case "closeTab":
         await this.sessions.closeTab(msg.id);
         this.postState();
+        break;
+      case "tabContextMenu":
+        await this.showTabContextMenu(msg.id);
         break;
       case "restart":
         await this.sessions.restart();
@@ -647,6 +654,107 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       await this.sessions.openHistorySession(picked.sessionId, picked.title);
     }
     this.postState();
+  }
+
+
+  private async showTabContextMenu(tabId: string): Promise<void> {
+    const title = this.sessions.getTabTitle(tabId) || "Chat";
+    const picked = await vscode.window.showQuickPick(
+      [
+        {
+          label: "$(notebook) View as Plain Text",
+          description: "Open full session record in an editor",
+          action: "view" as const,
+        },
+        {
+          label: "$(export) Export as Plain Text…",
+          description: "Save transcript to a .txt file",
+          action: "export" as const,
+        },
+        {
+          label: "$(copy) Copy Plain Text",
+          description: "Copy full session record to clipboard",
+          action: "copy" as const,
+        },
+        {
+          label: "$(close) Close Tab",
+          description: "Dispose this session tab",
+          action: "close" as const,
+        },
+      ],
+      { title: title, placeHolder: "Session tab actions" },
+    );
+    if (!picked) {
+      return;
+    }
+    if (picked.action === "close") {
+      await this.sessions.closeTab(tabId);
+      this.postState();
+      return;
+    }
+    await this.handleTabTranscriptAction(tabId, picked.action);
+  }
+
+  private async handleTabTranscriptAction(
+    tabId: string,
+    action: "view" | "export" | "copy",
+  ): Promise<void> {
+    const title = this.sessions.getTabTitle(tabId) || "OMP Session";
+    let messages;
+    try {
+      messages = await this.sessions.getMessagesForTab(tabId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logError("Failed to load session transcript for export", err);
+      vscode.window.showErrorMessage(`Could not load session transcript: ${message}`);
+      return;
+    }
+    if (!messages) {
+      vscode.window.showWarningMessage("That chat tab is no longer open.");
+      return;
+    }
+
+    const sessionId = this.sessions.getSessionIdForTab(tabId);
+    const text = formatSessionPlainText(messages, {
+      title,
+      sessionId,
+      exportedAt: new Date(),
+    });
+
+    if (action === "copy") {
+      await vscode.env.clipboard.writeText(text);
+      vscode.window.setStatusBarMessage("Session transcript copied", 2000);
+      return;
+    }
+
+    if (action === "view") {
+      const doc = await vscode.workspace.openTextDocument({
+        content: text,
+        language: "markdown",
+      });
+      await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false });
+      return;
+    }
+
+    const defaultName = suggestExportFileName(title, sessionId);
+    const folders = vscode.workspace.workspaceFolders;
+    const defaultUri = folders?.[0]
+      ? vscode.Uri.joinPath(folders[0].uri, defaultName)
+      : vscode.Uri.file(defaultName);
+    const uri = await vscode.window.showSaveDialog({
+      defaultUri,
+      filters: {
+        "Plain Text": ["txt", "md"],
+        "All Files": ["*"],
+      },
+      saveLabel: "Export Session",
+      title: "Export session as plain text",
+    });
+    if (!uri) {
+      return;
+    }
+    await vscode.workspace.fs.writeFile(uri, Buffer.from(text, "utf8"));
+    vscode.window.setStatusBarMessage(`Exported session to ${uri.fsPath}`, 3000);
   }
 
   private async showMoreMenu(): Promise<void> {

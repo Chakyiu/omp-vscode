@@ -166,6 +166,7 @@ export type WebviewToHost =
   | { type: "newChat" }
   | { type: "switchTab"; id: string }
   | { type: "closeTab"; id: string }
+  | { type: "tabContextMenu"; id: string }
   | { type: "restart" }
   | { type: "history" }
   | { type: "moreMenu" }

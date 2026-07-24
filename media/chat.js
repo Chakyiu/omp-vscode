@@ -2376,15 +2376,35 @@
     );
     // Switch on pointerdown so streaming re-renders cannot swallow the click.
     tabsEl.addEventListener("pointerdown", function (e) {
+      var tabEl = e.target.closest(".tab");
+      if (!tabEl || !tabsEl.contains(tabEl)) return;
+
+      // Middle-click closes the tab/session (browser/VS Code tab behavior).
+      if (e.button === 1) {
+        e.preventDefault();
+        e.stopPropagation();
+        var closeId = tabEl.getAttribute("data-tab-id");
+        if (closeId) {
+          vscode.postMessage({ type: "closeTab", id: closeId });
+        }
+        return;
+      }
+
       if (e.button != null && e.button !== 0) return;
       // Close is handled on click to avoid the mouseup falling through onto the next tab.
       if (e.target.closest("[data-action='close-tab']")) return;
-      var tabEl = e.target.closest(".tab");
-      if (!tabEl || !tabsEl.contains(tabEl)) return;
       var id = tabEl.getAttribute("data-tab-id");
       if (!id || id === state.activeTabId) return;
       e.preventDefault();
       vscode.postMessage({ type: "switchTab", id: id });
+    });
+
+    // Prevent the browser autoscroll/paste gesture after middle-click close.
+    tabsEl.addEventListener("auxclick", function (e) {
+      if (e.button !== 1) return;
+      if (!e.target.closest(".tab")) return;
+      e.preventDefault();
+      e.stopPropagation();
     });
 
     tabsEl.addEventListener("click", function (e) {
@@ -2395,6 +2415,17 @@
       e.preventDefault();
       e.stopPropagation();
       vscode.postMessage({ type: "closeTab", id: tabEl.getAttribute("data-tab-id") });
+    });
+
+    // Right-click a tab to view/export the full session transcript.
+    tabsEl.addEventListener("contextmenu", function (e) {
+      var tabEl = e.target.closest(".tab");
+      if (!tabEl || !tabsEl.contains(tabEl)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      var id = tabEl.getAttribute("data-tab-id");
+      if (!id) return;
+      vscode.postMessage({ type: "tabContextMenu", id: id });
     });
 
     tabsEl.addEventListener("keydown", function (e) {
