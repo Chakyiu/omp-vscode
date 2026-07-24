@@ -51,6 +51,23 @@ button {
 .status-dot.busy { background: var(--link); box-shadow: 0 0 0 3px color-mix(in srgb, var(--link) 20%, transparent); }
 .status-dot.error { background: var(--danger); }
 .status-dot.ready { background: transparent; }
+.status-dot.starting,
+.status-dot.stopped {
+  width: 10px;
+  height: 10px;
+  margin: 0;
+  border-radius: 50%;
+  box-sizing: border-box;
+  border: 1.5px solid color-mix(in srgb, var(--vscode-progressBar-background, var(--link)) 35%, transparent);
+  border-top-color: var(--vscode-progressBar-background, var(--link));
+  background: transparent;
+  box-shadow: none;
+  transform-origin: 50% 50%;
+  animation: status-spin 0.75s linear infinite;
+}
+@keyframes status-spin {
+  to { transform: rotate(360deg); }
+}
 
 /* ---- messages ---- */
 .messages {
@@ -156,6 +173,21 @@ button {
   opacity: 0.7;
   transform: rotate(0deg);
   transition: transform 140ms ease;
+}
+.collapse-spinner {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  box-sizing: border-box;
+  border: 1.5px solid color-mix(in srgb, var(--vscode-progressBar-background, var(--link)) 35%, transparent);
+  border-top-color: var(--vscode-progressBar-background, var(--link));
+  background: transparent;
+  transform-origin: 50% 50%;
+  animation: collapse-spin 0.75s linear infinite;
+}
+@keyframes collapse-spin {
+  to { transform: rotate(360deg); }
 }
 .collapse-chevron-spacer {
   width: 12px;
@@ -677,6 +709,39 @@ textarea::placeholder { color: var(--muted); }
   animation: blink 1s steps(1) infinite; color: var(--link);
 }
 @keyframes blink { 50% { opacity: 0; } }
+
+/* Busy placeholder before first thinking/tool/text arrives */
+.generating {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 2px 8px;
+  padding: 3px 4px 3px 10px;
+  border-left: 1px solid color-mix(in srgb, var(--border) 90%, transparent);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+  user-select: none;
+}
+.generating-spinner {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  box-sizing: border-box;
+  border: 1.5px solid color-mix(in srgb, var(--vscode-progressBar-background, var(--link)) 35%, transparent);
+  border-top-color: var(--vscode-progressBar-background, var(--link));
+  background: transparent;
+  flex: 0 0 auto;
+  transform-origin: 50% 50%;
+  animation: generating-spin 0.75s linear infinite;
+}
+.generating-label {
+  min-width: 0;
+}
+@keyframes generating-spin {
+  to { transform: rotate(360deg); }
+}
 
 @media (max-width: 320px) {
   .suggestions { grid-template-columns: 1fr; }

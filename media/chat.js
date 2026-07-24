@@ -407,6 +407,18 @@
     }
     details.classList.toggle("live", live);
     pre.classList.toggle("streaming", live);
+    const row = details.querySelector(".collapse-row");
+    if (row) {
+      const current = row.querySelector(".collapse-spinner, .collapse-chevron");
+      const hasSpinner = Boolean(current && current.classList.contains("collapse-spinner"));
+      if (!current || hasSpinner !== live) {
+        const tmp = document.createElement("div");
+        tmp.innerHTML = thinkingLeadIcon(live);
+        const next = tmp.firstChild;
+        if (current) current.replaceWith(next);
+        else row.insertBefore(next, row.firstChild);
+      }
+    }
     const summaryLabel = details.querySelector(".collapse-title");
     if (summaryLabel) {
       const nextLabel = thinkingLabel(part, live, collapseId);
@@ -451,6 +463,14 @@
         '<path fill="currentColor" d="M6.22 3.22a.75.75 0 0 1 1.06 0l4.25 4.25a.75.75 0 0 1 0 1.06l-4.25 4.25a.75.75 0 0 1-1.06-1.06L9.94 8 6.22 4.28a.75.75 0 0 1 0-1.06z"/>' +
       '</svg>'
     );
+  }
+
+  function collapseSpinner() {
+    return '<span class="collapse-spinner" aria-hidden="true"></span>';
+  }
+
+  function thinkingLeadIcon(isLive) {
+    return isLive ? collapseSpinner() : chevronIcon();
   }
 
   function formatDuration(ms) {
@@ -1093,7 +1113,7 @@
         '<details class="collapse thinking' + liveClass + '" data-collapse-id="' + escapeHtml(collapseId) + '"' + openAttr + '>' +
           '<summary class="collapse-summary">' +
             '<span class="collapse-row">' +
-              chevronIcon() +
+              thinkingLeadIcon(isLive) +
               '<span class="collapse-title">' + escapeHtml(label) + '</span>' +
             '</span>' +
           '</summary>' +
@@ -1238,6 +1258,53 @@
     return html;
   }
 
+
+  function generatingHtml() {
+    return (
+      '<div class="generating" aria-live="polite">' +
+        '<span class="generating-spinner" aria-hidden="true"></span>' +
+        '<span class="generating-label">Generating…</span>' +
+      '</div>'
+    );
+  }
+
+  function shouldShowGeneratingPlaceholder() {
+    if (!state.status || state.status.state !== "busy") return false;
+    const transcript = getTranscriptMessages();
+    if (!transcript.length) return false;
+
+    let lastUserIdx = -1;
+    for (let i = transcript.length - 1; i >= 0; i -= 1) {
+      if (transcript[i] && transcript[i].role === "user") {
+        lastUserIdx = i;
+        break;
+      }
+    }
+    if (lastUserIdx < 0) return false;
+
+    for (let i = lastUserIdx + 1; i < transcript.length; i += 1) {
+      const msg = transcript[i];
+      if (!msg || msg.role !== "assistant") continue;
+      // Assistant shell already renders its own Generating… fallback when parts
+      // are still empty; only the no-assistant gap needs an external row.
+      return false;
+    }
+    // Busy after the user message, but omp has not emitted the first part yet.
+    return true;
+  }
+
+  function syncGeneratingPlaceholder() {
+    if (!messagesEl) return;
+    const existing = messagesEl.querySelector(":scope > .generating");
+    if (shouldShowGeneratingPlaceholder()) {
+      if (!existing) {
+        messagesEl.insertAdjacentHTML("beforeend", generatingHtml());
+      }
+    } else if (existing) {
+      existing.remove();
+    }
+  }
+
   function renderMessage(msg) {
     const partsHtml = (msg.parts || [])
       .map(function (part, idx) {
@@ -1253,7 +1320,7 @@
 
     const fallback =
       msg.role === "assistant" && msg.streaming && (!msg.parts || msg.parts.length === 0)
-        ? `<div class="bubble streaming"></div>`
+        ? generatingHtml()
         : "";
 
     const partsSig = escapeHtml(partsSignature(msg.parts));
@@ -1380,9 +1447,13 @@
     );
   }
 
+  function tabShowsSpinner(tab) {
+    return !!(tab && (tab.busy || tab.status === "starting"));
+  }
+
   function buildTabHtml(tab, activeId) {
     const active = tab.id === activeId ? " active" : "";
-    const busy = tab.busy ? " busy" : "";
+    const busy = tabShowsSpinner(tab) ? " busy" : "";
     return (
       '<div class="tab' + active + busy + '" role="tab" tabindex="0" aria-selected="' + (tab.id === activeId ? "true" : "false") + '" data-tab-id="' + escapeHtml(tab.id) + '" title="' + escapeHtml(tab.title) + '">' +
         '<span class="tab-label"><span class="tab-title">' + escapeHtml(tab.title) + '</span></span>' +
@@ -1407,7 +1478,7 @@
     const signature =
       tabs
         .map(function (tab) {
-          return tab.id + "\0" + tab.title + "\0" + (tab.busy ? "1" : "0");
+          return tab.id + "\0" + tab.title + "\0" + (tabShowsSpinner(tab) ? "1" : "0");
         })
         .join("\n") +
       "\n@" +
@@ -1425,7 +1496,7 @@
       tabs.forEach(function (tab, i) {
         const el = existing[i];
         el.classList.toggle("active", tab.id === activeId);
-        el.classList.toggle("busy", !!tab.busy);
+        el.classList.toggle("busy", tabShowsSpinner(tab));
         el.setAttribute("aria-selected", tab.id === activeId ? "true" : "false");
         el.title = tab.title;
         const titleEl = el.querySelector(".tab-title");
@@ -1536,6 +1607,7 @@
         messagesEl.innerHTML = "";
       }
 
+      syncGeneratingPlaceholder();
       renderAttachments();
       renderActiveQuestion();
       renderUiQuestion();
