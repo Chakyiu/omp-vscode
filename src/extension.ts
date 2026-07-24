@@ -1,7 +1,8 @@
 import * as vscode from "vscode";
 import { ChatViewProvider } from "./chat/chatViewProvider";
-import { TabManager, type OpenSessionsState } from "./omp/tabManager";
 import { disposeErrorLog, initErrorLog, logError, showErrorLog } from "./omp/errorLog";
+import { invalidateOmpModelCache, preloadOmpModels } from "./omp/modelCatalog";
+import { type OpenSessionsState, TabManager } from "./omp/tabManager";
 import { disposeToolFileLog, showToolFileLog } from "./omp/toolFileLog";
 
 function workspaceCwd(): string {
@@ -55,11 +56,7 @@ export function activate(context: vscode.ExtensionContext): void {
     },
   };
   const sessions = new TabManager(workspaceCwd, openSessionsStore);
-  const provider = new ChatViewProvider(
-    context.extensionUri,
-    sessions,
-    context.globalStorageUri,
-  );
+  const provider = new ChatViewProvider(context.extensionUri, sessions, context.globalStorageUri);
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, provider, {
@@ -200,6 +197,26 @@ export function activate(context: vscode.ExtensionContext): void {
   void sessions.ensureStarted().catch((err) => {
     logError("Failed to start omp session on activate", err);
   });
+
+  // Preload the model list once at startup so the picker opens instantly;
+  // `ompChat.newChat`/session-ready refresh keeps it fresh. Reload if the
+  // omp binary path changes, since the cache is keyed on it.
+  const preloadModels = () => {
+    const ompPath =
+      vscode.workspace.getConfiguration("ompChat").get<string>("ompPath", "omp") || "omp";
+    void preloadOmpModels(ompPath).catch(() => {
+      // Non-fatal: the picker falls back to a fresh fetch on miss.
+    });
+  };
+  preloadModels();
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration("ompChat.ompPath")) {
+        invalidateOmpModelCache();
+        preloadModels();
+      }
+    }),
+  );
 }
 
 export function deactivate(): void {

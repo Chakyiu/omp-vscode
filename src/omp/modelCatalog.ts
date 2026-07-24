@@ -29,7 +29,7 @@ export async function listOmpModels(ompPath: string): Promise<OmpModelInfo[]> {
       env: process.env,
     });
     const parsed = JSON.parse(stdout) as { models?: OmpModelInfo[] } | OmpModelInfo[];
-    const models = Array.isArray(parsed) ? parsed : parsed.models ?? [];
+    const models = Array.isArray(parsed) ? parsed : (parsed.models ?? []);
     return models
       .filter((m) => m && (m.selector || m.id))
       .map((m) => ({
@@ -64,8 +64,46 @@ export async function listOmpModels(ompPath: string): Promise<OmpModelInfo[]> {
   }
 }
 
+// Module-level model cache: `omp models --json` is slow (can take several
+// seconds), so we preload the list once at extension start and refresh it when
+// a new omp session becomes ready. The picker then opens instantly from cache.
+let cachedModels: OmpModelInfo[] | null = null;
+let cachedOmpPath: string | null = null;
+let preloadPromise: Promise<OmpModelInfo[]> | null = null;
+
+export function invalidateOmpModelCache(): void {
+  cachedModels = null;
+  cachedOmpPath = null;
+  preloadPromise = null;
+}
+
+// Fetch and store the model list for ompPath. A cache hit returns instantly
+// (the picker opens with no `omp models` round-trip); concurrent callers
+// share one in-flight fetch. Safe to fire-and-forget at startup.
+export async function preloadOmpModels(ompPath: string): Promise<OmpModelInfo[]> {
+  if (cachedOmpPath === ompPath && cachedModels) {
+    return cachedModels;
+  }
+  if (preloadPromise && cachedOmpPath === ompPath) {
+    return preloadPromise;
+  }
+  cachedOmpPath = ompPath;
+  preloadPromise = listOmpModels(ompPath)
+    .then((models) => {
+      cachedModels = models;
+      preloadPromise = null;
+      return models;
+    })
+    .catch((err) => {
+      preloadPromise = null;
+      cachedModels = null;
+      throw err;
+    });
+  return preloadPromise;
+}
+
 export async function pickModel(ompPath: string, current?: string): Promise<string | undefined> {
-  const models = await listOmpModels(ompPath);
+  const models = await preloadOmpModels(ompPath);
   if (models.length === 0) {
     const typed = await vscode.window.showInputBox({
       title: "Select OMP model",
