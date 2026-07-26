@@ -157,7 +157,8 @@ export type HostToWebview =
   | { type: "tabs"; tabs: ChatTabInfo[]; activeTabId: string }
   | { type: "fileResults"; requestId: number; files: FileSuggestItem[] }
   | { type: "uiQuestion"; question: UiQuestion | null }
-  | { type: "composerPrefill"; text: string };
+  | { type: "composerPrefill"; text: string }
+  | { type: "inlineImage"; clientId?: string; attachment: Attachment };
 
 export type WebviewToHost =
   | { type: "ready" }
@@ -182,6 +183,7 @@ export type WebviewToHost =
       name: string;
       mimeType: string;
       base64: string;
+      clientId?: string;
     }
   | {
       type: "attachTextFile";

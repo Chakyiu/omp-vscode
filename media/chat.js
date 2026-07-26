@@ -117,12 +117,29 @@
     return /^(https?:\/\/|vscode:|file:|mailto:|#|\/|\.\/|\.\.\/|[A-Za-z]:\\)/i.test(value) || !/^[a-z][a-z0-9+.-]*:/i.test(value);
   }
 
+  function looksLikeFileMention(pathValue) {
+    const value = String(pathValue || "").trim();
+    if (!value) return false;
+    // Keep emails / twitter-style handles as plain text.
+    if (value.indexOf("/") >= 0 || value.indexOf("\\") >= 0) return true;
+    if (/\/$/.test(value)) return true;
+    if (/\.[A-Za-z0-9]{1,12}$/.test(value)) return true;
+    return false;
+  }
+
   function renderInlineMarkdown(text) {
     const codes = [];
+    const mentions = [];
     let s = String(text == null ? "" : text);
     s = s.replace(/`([^`\n]+)`/g, function (_, code) {
       codes.push(code);
       return "\u0000CODE" + (codes.length - 1) + "\u0000";
+    });
+    // Pull path-like @mentions out before HTML escaping so they can render as chips.
+    s = s.replace(/(^|[\s([{\"'])@([^\s\]})\"']+)/g, function (match, lead, mentionPath) {
+      if (!looksLikeFileMention(mentionPath)) return match;
+      mentions.push(mentionPath);
+      return lead + "\u0000MENTION" + (mentions.length - 1) + "\u0000";
     });
     s = escapeHtml(s);
 
@@ -138,6 +155,21 @@
     s = s.replace(/(^|[^\w*])\*(?!\s)([^*\n]+?)(?!\s)\*(?!\*)/g, "$1<em>$2</em>");
     s = s.replace(/(^|[^\w_])_(?!\s)([^_\n]+?)(?!\s)_(?!_)/g, "$1<em>$2</em>");
 
+    s = s.replace(/\u0000MENTION(\d+)\u0000/g, function (_, idx) {
+      const mentionPath = mentions[Number(idx)] || "";
+      if (!mentionPath) return "";
+      const isFolder = /[\\\/]$/.test(mentionPath);
+      const openPath = mentionPath.replace(/[\\\/]+$/, "");
+      const label = "@" + mentionPath;
+      return (
+        '<button type="button" class="file-link mention-chip' + (isFolder ? " folder" : "") + '" data-action="open-file" data-path="' +
+          escapeHtml(openPath) +
+          '" title="' + escapeHtml(label) + '">' +
+          (isFolder ? folderChipIcon() : fileChipIcon()) +
+          '<span class="file-link-label">' + escapeHtml(label) + '</span>' +
+        "</button>"
+      );
+    });
     s = s.replace(/\u0000CODE(\d+)\u0000/g, function (_, idx) {
       return "<code>" + escapeHtml(codes[Number(idx)] || "") + "</code>";
     });
@@ -1012,6 +1044,14 @@
     );
   }
 
+  function folderChipIcon() {
+    return (
+      '<svg class="file-link-icon" viewBox="0 0 16 16" aria-hidden="true">' +
+        '<path fill="currentColor" d="M1.75 3.5A1.75 1.75 0 0 1 3.5 1.75h2.69c.35 0 .68.14.92.38l.8.8c.12.12.28.19.45.19H12.5A1.75 1.75 0 0 1 14.25 4.9v7.6A1.75 1.75 0 0 1 12.5 14.25h-9A1.75 1.75 0 0 1 1.75 12.5V3.5zm1.5 0v9h9v-7.6H8.36a1.75 1.75 0 0 1-1.24-.51l-.8-.8H3.5a.25.25 0 0 0-.25.25z"/>' +
+      "</svg>"
+    );
+  }
+
   function renderFileLink(refOrPath) {
     const ref = typeof refOrPath === "string" ? { path: refOrPath } : (refOrPath || {});
     const full = normalizeToolFilePath(ref.path);
@@ -1340,11 +1380,15 @@
   }
 
   function renderAttachments() {
-    if (state.attachments.length === 0) {
+    const visible = (state.attachments || []).filter(function (a) {
+      // Images render as inline chips inside the composer.
+      return a && a.kind !== "image";
+    });
+    if (visible.length === 0) {
       attachmentsEl.innerHTML = "";
       return;
     }
-    attachmentsEl.innerHTML = state.attachments
+    attachmentsEl.innerHTML = visible
       .map(function (a) {
         const isImagePreview = a.kind === "image" && a.previewDataUrl;
         const path = escapeHtml(a.fsPath || a.path || "");
@@ -1534,7 +1578,7 @@
       sendBtn.title = busy ? "Queue" : "Send";
       sendBtn.setAttribute("aria-label", busy ? "Queue" : "Send");
       sendBtn.classList.toggle("queue", busy);
-      inputEl.disabled = !interactable;
+      setComposerEnabled(interactable);
       [newChatBtn, historyBtn, moreBtn, attachBtn, attachFilesBtn, attachFolderBtn, modelBtn, modeBtn, usageBtn, queueToggleEl]
         .filter(Boolean)
         .forEach(function (btn) { btn.disabled = !interactable; });
@@ -1795,9 +1839,390 @@
     return parts[parts.length - 1] || pathValue;
   }
 
+  function isComposerEmpty() {
+    if (getComposerText().trim().length > 0) return false;
+    if (inputEl && inputEl.querySelector(".image-chip")) return false;
+    return true;
+  }
+
+  function syncComposerEmptyState() {
+    if (!inputEl) return;
+    inputEl.classList.toggle("is-empty", isComposerEmpty());
+  }
+
+  function setComposerEnabled(enabled) {
+    if (!inputEl) return;
+    inputEl.setAttribute("contenteditable", enabled ? "true" : "false");
+    inputEl.setAttribute("aria-disabled", enabled ? "false" : "true");
+  }
+
+  function createComposerMentionChip(mentionPath, kind) {
+    const path = String(mentionPath || "").replace(/\\/g, "/");
+    const span = document.createElement("span");
+    span.className = "mention-chip" + (kind === "folder" ? " folder" : "");
+    span.contentEditable = "false";
+    span.setAttribute("data-mention-path", path);
+    span.setAttribute("data-kind", kind === "folder" ? "folder" : "file");
+    span.setAttribute("title", "@" + path);
+    span.innerHTML =
+      (kind === "folder" ? folderChipIcon() : fileChipIcon()) +
+      '<span class="file-link-label">' + escapeHtml("@" + path) + "</span>";
+    return span;
+  }
+
+  function createComposerImageChip(attachment) {
+    const att = attachment || {};
+    const span = document.createElement("span");
+    span.className = "mention-chip image-chip";
+    span.contentEditable = "false";
+    if (att.id) span.setAttribute("data-attachment-id", att.id);
+    if (att.clientId) span.setAttribute("data-client-id", att.clientId);
+    const path = att.fsPath || att.path || att.label || "";
+    if (path) span.setAttribute("data-path", path);
+    span.setAttribute("data-kind", "image");
+    const fullLabel = att.label || path || "Image";
+    // Keep the chip compact: show "Image" instead of long paste/<uuid>.png paths.
+    const shortLabel = (att.label && att.label.indexOf("paste/") === 0) ? "Image" : (basename(fullLabel) || "Image");
+    span.setAttribute("title", fullLabel);
+    const src = att.previewDataUrl || "";
+    const thumb = src
+      ? '<img class="composer-image-thumb" src="' + src + '" alt="" draggable="false" />'
+      : '<span class="att-icon">' + kindIcon("image") + "</span>";
+    span.innerHTML =
+      thumb +
+      '<span class="file-link-label">' + escapeHtml(shortLabel) + "</span>" +
+      '<button type="button" class="composer-chip-remove" data-action="remove-composer-image" title="Remove" tabindex="-1">×</button>';
+    return span;
+  }
+
+  function insertComposerImageChip(attachment, opts) {
+    const options = opts || {};
+    if (!attachment || !inputEl) return null;
+    if (attachment.clientId) {
+      const pending = inputEl.querySelector('.image-chip[data-client-id="' + String(attachment.clientId).replace(/"/g, "") + '"]');
+      if (pending) {
+        if (attachment.id) pending.setAttribute("data-attachment-id", attachment.id);
+        if (attachment.fsPath || attachment.path) {
+          pending.setAttribute("data-path", attachment.fsPath || attachment.path);
+        }
+        pending.setAttribute("title", attachment.label || attachment.path || "Image");
+        const img = pending.querySelector(".composer-image-thumb");
+        if (img && attachment.previewDataUrl) img.setAttribute("src", attachment.previewDataUrl);
+        const label = pending.querySelector(".file-link-label");
+        if (label && attachment.label) label.textContent = attachment.label;
+        pending.removeAttribute("data-client-id");
+        syncComposerEmptyState();
+        return pending;
+      }
+    }
+    if (attachment.id) {
+      const existing = inputEl.querySelector('.image-chip[data-attachment-id="' + String(attachment.id).replace(/"/g, "") + '"]');
+      if (existing) return existing;
+    }
+    const chip = createComposerImageChip(attachment);
+    const space = document.createTextNode(" ");
+    if (options.atEnd) {
+      inputEl.appendChild(chip);
+      inputEl.appendChild(space);
+    } else {
+      insertComposerNodesAtCaret([chip, space]);
+    }
+    syncComposerEmptyState();
+    return chip;
+  }
+
+  function reconcileComposerImageChips() {
+    if (!inputEl) return;
+    const images = (state.attachments || []).filter(function (a) { return a && a.kind === "image"; });
+    const pending = {};
+    images.forEach(function (a) { if (a.id) pending[a.id] = a; });
+    const optimistic = [];
+    Array.prototype.slice.call(inputEl.querySelectorAll(".image-chip")).forEach(function (chip) {
+      const id = chip.getAttribute("data-attachment-id") || "";
+      const clientId = chip.getAttribute("data-client-id") || "";
+      if (id && pending[id]) {
+        delete pending[id];
+        return;
+      }
+      if (!id && clientId) {
+        optimistic.push(chip);
+        return;
+      }
+      chip.remove();
+    });
+    // Pair unmatched host images with optimistic paste chips to avoid duplicates.
+    Object.keys(pending).forEach(function (id) {
+      if (optimistic.length) {
+        const chip = optimistic.shift();
+        insertComposerImageChip(Object.assign({}, pending[id], {
+          clientId: chip.getAttribute("data-client-id") || undefined,
+        }));
+        return;
+      }
+      insertComposerImageChip(pending[id], { atEnd: true });
+    });
+    syncComposerEmptyState();
+  }
+
+  function removeComposerImageChip(chip) {
+    if (!chip || !inputEl || !inputEl.contains(chip)) return;
+    const id = chip.getAttribute("data-attachment-id") || "";
+    const next = chip.nextSibling;
+    chip.remove();
+    if (next && next.nodeType === Node.TEXT_NODE && /^\s$/.test(next.nodeValue || "")) {
+      if (next.parentNode) next.parentNode.removeChild(next);
+    }
+    if (id) {
+      state.attachments = (state.attachments || []).filter(function (a) { return a.id !== id; });
+      vscode.postMessage({ type: "removeAttachment", id: id });
+    }
+    syncComposerEmptyState();
+    autosize();
+  }
+
+
+  function serializeComposerNode(node, acc) {
+    if (!node) return;
+    if (node.nodeType === Node.TEXT_NODE) {
+      acc.push(node.nodeValue || "");
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    if (node.classList && node.classList.contains("image-chip")) {
+      // Images stay in attachment state; do not serialize into prompt text.
+      return;
+    }
+    if (node.classList && node.classList.contains("mention-chip")) {
+      const path = node.getAttribute("data-mention-path") || "";
+      acc.push(path ? ("@" + path) : (node.textContent || ""));
+      return;
+    }
+    if (node.tagName === "BR") {
+      acc.push("\n");
+      return;
+    }
+    const children = node.childNodes;
+    for (let i = 0; i < children.length; i++) {
+      serializeComposerNode(children[i], acc);
+    }
+    if (node !== inputEl && (node.tagName === "DIV" || node.tagName === "P")) {
+      acc.push("\n");
+    }
+  }
+
+  function getComposerText() {
+    if (!inputEl) return "";
+    const acc = [];
+    serializeComposerNode(inputEl, acc);
+    return acc.join("").replace(/\n$/, "");
+  }
+
+  function composerPlainLength(node) {
+    if (!node) return 0;
+    if (node.nodeType === Node.TEXT_NODE) return (node.nodeValue || "").length;
+    if (node.nodeType !== Node.ELEMENT_NODE) return 0;
+    if (node.classList && node.classList.contains("image-chip")) {
+      return 1;
+    }
+    if (node.classList && node.classList.contains("mention-chip")) {
+      const path = node.getAttribute("data-mention-path") || "";
+      return path ? ("@" + path).length : (node.textContent || "").length;
+    }
+    if (node.tagName === "BR") return 1;
+    let total = 0;
+    const children = node.childNodes;
+    for (let i = 0; i < children.length; i++) total += composerPlainLength(children[i]);
+    if (node !== inputEl && (node.tagName === "DIV" || node.tagName === "P")) total += 1;
+    return total;
+  }
+
+  function getComposerCaretOffset() {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || !inputEl) return getComposerText().length;
+    const range = sel.getRangeAt(0);
+    if (!inputEl.contains(range.endContainer)) return getComposerText().length;
+    const pre = range.cloneRange();
+    pre.selectNodeContents(inputEl);
+    pre.setEnd(range.endContainer, range.endOffset);
+    const holder = document.createElement("div");
+    holder.appendChild(pre.cloneContents());
+    return composerPlainLength(holder);
+  }
+
+  function setComposerCaretOffset(offset) {
+    if (!inputEl) return;
+    let remaining = Math.max(0, Number(offset) || 0);
+    const sel = window.getSelection();
+    if (!sel) return;
+
+    function walk(node) {
+      if (remaining < 0) return true;
+      if (node.nodeType === Node.TEXT_NODE) {
+        const text = node.nodeValue || "";
+        if (remaining <= text.length) {
+          const range = document.createRange();
+          range.setStart(node, remaining);
+          range.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(range);
+          remaining = -1;
+          return true;
+        }
+        remaining -= text.length;
+        return false;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return false;
+      if (node.classList && node.classList.contains("mention-chip")) {
+        const len = composerPlainLength(node);
+        if (remaining <= len) {
+          const range = document.createRange();
+          range.setStartAfter(node);
+          range.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(range);
+          remaining = -1;
+          return true;
+        }
+        remaining -= len;
+        return false;
+      }
+      if (node.tagName === "BR") {
+        if (remaining <= 1) {
+          const range = document.createRange();
+          range.setStartAfter(node);
+          range.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(range);
+          remaining = -1;
+          return true;
+        }
+        remaining -= 1;
+        return false;
+      }
+      const children = Array.prototype.slice.call(node.childNodes);
+      for (let i = 0; i < children.length; i++) {
+        if (walk(children[i])) return true;
+      }
+      if (node !== inputEl && (node.tagName === "DIV" || node.tagName === "P")) {
+        if (remaining <= 1) {
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          range.collapse(false);
+          sel.removeAllRanges();
+          sel.addRange(range);
+          remaining = -1;
+          return true;
+        }
+        remaining -= 1;
+      }
+      return false;
+    }
+
+    if (!walk(inputEl)) {
+      const range = document.createRange();
+      range.selectNodeContents(inputEl);
+      range.collapse(false);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+  }
+
+  function clearComposer() {
+    if (!inputEl) return;
+    inputEl.innerHTML = "";
+    syncComposerEmptyState();
+  }
+
+  function setComposerText(text) {
+    if (!inputEl) return;
+    const raw = text == null ? "" : String(text);
+    inputEl.innerHTML = "";
+    if (!raw) {
+      syncComposerEmptyState();
+      return;
+    }
+
+    const lines = raw.replace(/\r\n/g, "\n").split("\n");
+    lines.forEach(function (line, lineIdx) {
+      if (lineIdx > 0) inputEl.appendChild(document.createElement("br"));
+      const re = /(^|[\s([{\"'])@([^\s\]})\"']+)/g;
+      let last = 0;
+      let match;
+      while ((match = re.exec(line))) {
+        const full = match[0];
+        const lead = match[1] || "";
+        const mentionPath = match[2] || "";
+        const start = match.index;
+        if (start > last) {
+          inputEl.appendChild(document.createTextNode(line.slice(last, start)));
+        }
+        if (lead) inputEl.appendChild(document.createTextNode(lead));
+        if (looksLikeFileMention(mentionPath)) {
+          const kind = /[\\\/]$/.test(mentionPath) ? "folder" : "file";
+          inputEl.appendChild(createComposerMentionChip(mentionPath, kind));
+        } else {
+          inputEl.appendChild(document.createTextNode("@" + mentionPath));
+        }
+        last = start + full.length;
+      }
+      if (last < line.length) {
+        inputEl.appendChild(document.createTextNode(line.slice(last)));
+      }
+    });
+    syncComposerEmptyState();
+  }
+
+  function deleteComposerRange(start, end) {
+    const text = getComposerText();
+    const next = text.slice(0, start) + text.slice(end);
+    setComposerText(next);
+    setComposerCaretOffset(start);
+  }
+
+  function insertComposerNodesAtCaret(nodes) {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || (!inputEl.contains(sel.anchorNode) && sel.anchorNode !== inputEl)) {
+      nodes.forEach(function (n) { inputEl.appendChild(n); });
+      if (nodes.length) {
+        const range = document.createRange();
+        range.setStartAfter(nodes[nodes.length - 1]);
+        range.collapse(true);
+        if (sel) {
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+      }
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    let last = null;
+    // Insert in reverse so order stays correct with insertNode.
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      range.insertNode(nodes[i]);
+    }
+    last = nodes[nodes.length - 1];
+    if (last) {
+      const after = document.createRange();
+      after.setStartAfter(last);
+      after.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(after);
+    }
+  }
+
+  function insertComposerMention(mentionPath, kind) {
+    const path = String(mentionPath || "").replace(/\\/g, "/");
+    if (!path) return;
+    const chip = createComposerMentionChip(path, kind);
+    const space = document.createTextNode(" ");
+    insertComposerNodesAtCaret([chip, space]);
+    syncComposerEmptyState();
+  }
+
   function getTriggerAtCursor() {
-    const value = inputEl.value;
-    const cursor = inputEl.selectionStart == null ? value.length : inputEl.selectionStart;
+    const value = getComposerText();
+    const cursor = getComposerCaretOffset();
     const before = value.slice(0, cursor);
 
     // Slash commands: only at start of input (optional leading whitespace)
@@ -1835,7 +2260,7 @@
     }
     closeQueueMenu();
     suggestEl.hidden = false;
-    suggestHeaderEl.textContent = suggest.kind === "command" ? "Commands" : "Attach file or folder";
+    suggestHeaderEl.textContent = suggest.kind === "command" ? "Commands" : "Mention file or folder";
     suggestListEl.innerHTML = suggest.items.map(function (item, index) {
       const active = index === suggest.active ? " active" : "";
       const icon = suggest.kind === "command" ? "⌘" : (item.kind === "folder" ? "📁" : "📄");
@@ -1858,24 +2283,30 @@
   }
 
   function replaceTriggerRange(replacement) {
-    const value = inputEl.value;
+    const value = getComposerText();
     const start = suggest.start;
     const end = suggest.end;
     const next = value.slice(0, start) + replacement + value.slice(end);
-    inputEl.value = next;
-    const caret = start + replacement.length;
-    inputEl.setSelectionRange(caret, caret);
+    setComposerText(next);
+    const caret = start + String(replacement || "").length;
+    setComposerCaretOffset(caret);
     autosize();
   }
 
   function applySuggestItem(item) {
     if (!item) return;
     if (suggest.kind === "file") {
-      replaceTriggerRange("");
-      closeSuggest();
-      if (item.fsPath) {
-        vscode.postMessage({ type: "attachPaths", paths: [item.fsPath] });
+      // Keep @mentions inline as chips in the composer (omp resolves @path from cwd).
+      let mentionPath = String(item.path || item.fsPath || "").replace(/\\/g, "/");
+      if (item.kind === "folder" && mentionPath && mentionPath.slice(-1) !== "/") {
+        mentionPath += "/";
       }
+      deleteComposerRange(suggest.start, suggest.end);
+      if (mentionPath) {
+        insertComposerMention(mentionPath, item.kind === "folder" ? "folder" : "file");
+      }
+      closeSuggest();
+      autosize();
       inputEl.focus();
       return;
     }
@@ -1931,7 +2362,7 @@
     suggest.open = true;
     requestFileSuggest(trigger.query);
     // Keep previous items visible while waiting; header updates immediately.
-    if (suggestHeaderEl) suggestHeaderEl.textContent = "Attach file or folder";
+    if (suggestHeaderEl) suggestHeaderEl.textContent = "Mention file or folder";
     if (suggestEl) suggestEl.hidden = suggest.items.length === 0;
   }
 
@@ -2033,12 +2464,11 @@
   }
 
   function applyComposerPrefill(text) {
-    inputEl.value = text == null ? "" : String(text);
+    setComposerText(text == null ? "" : String(text));
     autosize();
     inputEl.focus();
     try {
-      const len = inputEl.value.length;
-      inputEl.setSelectionRange(len, len);
+      setComposerCaretOffset(getComposerText().length);
     } catch (_) {}
   }
 
@@ -2068,7 +2498,7 @@
   }
 
   function send() {
-    const text = inputEl.value;
+    const text = getComposerText();
     if (text.trim() === "" && state.attachments.length === 0) return;
     stickToBottom = true;
     const busy = state.status.state === "busy";
@@ -2090,13 +2520,14 @@
       scrollMessagesToBottom(true);
     }
     vscode.postMessage({ type: "send", text: text });
-    inputEl.value = "";
+    clearComposer();
     autosize();
   }
 
   function autosize() {
+    syncComposerEmptyState();
     inputEl.style.height = "auto";
-    inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + "px";
+    inputEl.style.height = Math.min(Math.max(inputEl.scrollHeight, 44), 160) + "px";
   }
 
   function fileToBase64(file) {
@@ -2134,11 +2565,21 @@
     for (const file of files) {
       if (file.type && file.type.indexOf("image/") === 0) {
         const base64 = await fileToBase64(file);
+        const clientId = "drop-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+        const previewDataUrl = "data:" + (file.type || "image/png") + ";base64," + base64;
+        insertComposerImageChip({
+          clientId: clientId,
+          kind: "image",
+          label: file.name || "Image",
+          previewDataUrl: previewDataUrl,
+        });
+        autosize();
         vscode.postMessage({
           type: "attachImage",
-          name: file.name || `image-${Date.now()}.png`,
+          name: file.name || ("image-" + Date.now() + ".png"),
           mimeType: file.type || "image/png",
           base64: base64,
+          clientId: clientId,
         });
         continue;
       }
@@ -2233,13 +2674,56 @@
     if (e.key === "Enter" && e.shiftKey === false) {
       e.preventDefault();
       send();
+      return;
+    }
+    if (e.key === "Enter" && e.shiftKey) {
+      e.preventDefault();
+      insertComposerNodesAtCaret([document.createElement("br")]);
+      autosize();
+      syncComposerEmptyState();
     }
   });
   inputEl.addEventListener("input", function () {
+    // If an image chip was deleted with backspace, drop the attachment too.
+    const alive = {};
+    Array.prototype.slice.call(inputEl.querySelectorAll(".image-chip[data-attachment-id]")).forEach(function (chip) {
+      alive[chip.getAttribute("data-attachment-id")] = true;
+    });
+    const removed = (state.attachments || []).filter(function (a) {
+      return a && a.kind === "image" && a.id && !alive[a.id];
+    });
+    if (removed.length) {
+      state.attachments = (state.attachments || []).filter(function (a) {
+        return !(a && a.kind === "image" && a.id && !alive[a.id]);
+      });
+      removed.forEach(function (a) {
+        vscode.postMessage({ type: "removeAttachment", id: a.id });
+      });
+    }
+    syncComposerEmptyState();
     autosize();
     refreshSuggestFromInput();
   });
-  inputEl.addEventListener("click", refreshSuggestFromInput);
+  inputEl.addEventListener("click", function (e) {
+    const removeBtn = e.target.closest('[data-action="remove-composer-image"]');
+    if (removeBtn && inputEl.contains(removeBtn)) {
+      e.preventDefault();
+      e.stopPropagation();
+      removeComposerImageChip(removeBtn.closest(".image-chip"));
+      return;
+    }
+    const imageChip = e.target.closest(".image-chip");
+    if (imageChip && inputEl.contains(imageChip)) {
+      const path = imageChip.getAttribute("data-path") || "";
+      const srcEl = imageChip.querySelector(".composer-image-thumb");
+      const src = srcEl ? srcEl.getAttribute("src") : "";
+      if (src || path) {
+        openImagePreview(src || "", path, imageChip.getAttribute("title") || "Image");
+        return;
+      }
+    }
+    refreshSuggestFromInput();
+  });
   inputEl.addEventListener("keyup", function (e) {
     if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "Home" || e.key === "End") {
       refreshSuggestFromInput();
@@ -2252,27 +2736,54 @@
     const imageItems = Array.from(items).filter(function (item) {
       return item.type && item.type.indexOf("image/") === 0;
     });
-    if (imageItems.length === 0) return;
-    e.preventDefault();
-    for (const item of imageItems) {
-      const file = item.getAsFile();
-      if (file == null) continue;
-      const base64 = await fileToBase64(file);
-      vscode.postMessage({
-        type: "attachImage",
-        name: `paste-${Date.now()}.png`,
-        mimeType: file.type || "image/png",
-        base64: base64,
-      });
+    if (imageItems.length) {
+      e.preventDefault();
+      for (const item of imageItems) {
+        const file = item.getAsFile();
+        if (file == null) continue;
+        const base64 = await fileToBase64(file);
+        const clientId = "paste-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+        const previewDataUrl = "data:" + (file.type || "image/png") + ";base64," + base64;
+        insertComposerImageChip({
+          clientId: clientId,
+          kind: "image",
+          label: "Pasted image",
+          previewDataUrl: previewDataUrl,
+        });
+        autosize();
+        vscode.postMessage({
+          type: "attachImage",
+          name: "paste-" + Date.now() + ".png",
+          mimeType: file.type || "image/png",
+          base64: base64,
+          clientId: clientId,
+        });
+      }
+      return;
     }
+    const plain = e.clipboardData.getData("text/plain");
+    if (plain == null) return;
+    e.preventDefault();
+    const parts = String(plain).replace(/\r\n/g, "\n").split("\n");
+    const nodes = [];
+    parts.forEach(function (part, idx) {
+      if (idx > 0) nodes.push(document.createElement("br"));
+      if (part) nodes.push(document.createTextNode(part));
+    });
+    if (!nodes.length) nodes.push(document.createTextNode(""));
+    insertComposerNodesAtCaret(nodes);
+    syncComposerEmptyState();
+    autosize();
+    refreshSuggestFromInput();
   });
 
   emptyEl.addEventListener("click", function (e) {
     const btn = e.target.closest(".chip");
     if (btn == null) return;
-    inputEl.value = btn.getAttribute("data-prompt") || "";
+    setComposerText(btn.getAttribute("data-prompt") || "");
     autosize();
     inputEl.focus();
+    setComposerCaretOffset(getComposerText().length);
   });
 
   function openFileFromEvent(e) {
@@ -2591,7 +3102,24 @@
     }
     if (msg.type === "attachments") {
       state.attachments = msg.attachments || [];
+      reconcileComposerImageChips();
       render();
+      return;
+    }
+    if (msg.type === "inlineImage") {
+      const attachment = Object.assign({}, msg.attachment || {});
+      if (msg.clientId) attachment.clientId = msg.clientId;
+      if (attachment.id) {
+        const without = (state.attachments || []).filter(function (a) {
+          if (attachment.id && a.id === attachment.id) return false;
+          if (attachment.fsPath && a.fsPath && a.fsPath === attachment.fsPath) return false;
+          return true;
+        });
+        state.attachments = without.concat([attachment]);
+      }
+      insertComposerImageChip(attachment);
+      renderAttachments();
+      autosize();
       return;
     }
     if (msg.type === "composerPrefill") {
@@ -2654,6 +3182,8 @@
     }
   });
 
+  syncComposerEmptyState();
+  autosize();
   vscode.postMessage({ type: "ready" });
   render();
 })();

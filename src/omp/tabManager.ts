@@ -336,8 +336,8 @@ export class TabManager {
     return this.active().removeQueued(id, textHint);
   }
 
-  addAttachment(attachment: Omit<Attachment, "id"> & { id?: string }): void {
-    this.active().addAttachment(attachment);
+  addAttachment(attachment: Omit<Attachment, "id"> & { id?: string }): Attachment {
+    return this.active().addAttachment(attachment);
   }
 
   removeAttachment(id: string): void {

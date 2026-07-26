@@ -5,7 +5,7 @@ import { randomUUID } from "crypto";
 import * as vscode from "vscode";
 import type { Attachment, AttachmentKind } from "./types";
 type AttachmentHost = {
-  addAttachment(attachment: Omit<import("./types").Attachment, "id"> & { id?: string }): void;
+  addAttachment(attachment: Omit<import("./types").Attachment, "id"> & { id?: string }): Attachment;
 };
 
 const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"]);
@@ -138,8 +138,7 @@ export class AttachmentService {
       previewDataUrl,
       size: stat.isDirectory() ? undefined : stat.size,
     };
-    this.sessions.addAttachment(attachment);
-    return { id: "", ...attachment };
+    return this.sessions.addAttachment(attachment);
   }
 
   async attachImageBase64(input: {
@@ -187,19 +186,18 @@ export class AttachmentService {
       previewDataUrl,
       size: raw.byteLength,
     };
-    this.sessions.addAttachment(attachment);
-    return { id: "", ...attachment };
+    return this.sessions.addAttachment(attachment);
   }
 
   async attachTextFile(input: {
     name: string;
     content: string;
     language?: string;
-  }): Promise<void> {
+  }): Promise<Attachment> {
     if (input.content.length > 400_000) {
       throw new Error(`File ${input.name} is too large to paste inline`);
     }
-    this.sessions.addAttachment({
+    return this.sessions.addAttachment({
       kind: "text",
       label: input.name,
       path: input.name,

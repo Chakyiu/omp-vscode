@@ -117,9 +117,9 @@ code --install-extension oh-my-pi-chat-0.1.0.vsix
 ## Attachments
 
 - Click **📎** / **Files** / **Folder** in the composer
-- Type `@` in the composer to attach a file or entire folder
-- Paste an image from the clipboard into the input
+- Type `@` in the composer to insert an inline file/folder mention
+- Paste an image from the clipboard into the input (shows as an inline chip)
 - Drag & drop files onto the chat panel
 - Right-click in Explorer → **OMP: Attach to Chat**
 
-Attachments are sent to `omp` as `@/absolute/path` mentions (images/files/folders), except code selections which are inlined.
+Paperclip/drag attachments are sent to `omp` as `@/absolute/path` mentions (images/files/folders). `@` autocomplete inserts an inline `@path` mention in the prompt. Code selections are inlined as fenced blocks.

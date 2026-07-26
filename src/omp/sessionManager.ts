@@ -40,6 +40,9 @@ export class SessionManager {
   private restoringHistory = false;
   /** Prompts waiting for the current turn to finish before being sent. */
   private pendingPrompts: Array<{ id: string; text: string; composed: string }> = [];
+  /** True while Stop is waiting for the aborted turn to settle before resuming the queue. */
+  private abortedTurn = false;
+  private abortedTurnTimer: ReturnType<typeof setTimeout> | undefined;
   /** Interactive omp extension UI questions waiting for a user answer. */
   private pendingUiQuestions: UiQuestion[] = [];
   /** Wall-clock start for the currently open thinking block. */
@@ -265,6 +268,11 @@ export class SessionManager {
     if (this.status.state === "busy") {
       this.abort();
     }
+    this.abortedTurn = false;
+    if (this.abortedTurnTimer) {
+      clearTimeout(this.abortedTurnTimer);
+      this.abortedTurnTimer = undefined;
+    }
     this.messages = [];
     this.currentAssistantId = undefined;
     this.attachments = [];
@@ -279,7 +287,7 @@ export class SessionManager {
     await this.start({ continueLastSession: false, resumeSessionId: undefined });
   }
 
-  addAttachment(attachment: Omit<Attachment, "id"> & { id?: string }): void {
+  addAttachment(attachment: Omit<Attachment, "id"> & { id?: string }): Attachment {
     const next: Attachment = {
       id: attachment.id ?? randomUUID(),
       kind: attachment.kind ?? (attachment.content ? "text" : "file"),
@@ -305,6 +313,7 @@ export class SessionManager {
       next,
     ];
     this.notify();
+    return next;
   }
 
   removeAttachment(id: string): void {
@@ -478,13 +487,46 @@ export class SessionManager {
 
   abort(): void {
     this.client?.abort();
-    this.clearQueuedPrompts();
+    // Stop only cancels the in-flight turn. Keep queued follow-ups and resume
+    // them after the aborted turn settles (agent_end or a short fallback).
     this.clearUiQuestions({ cancelRemote: true });
     if (this.currentAssistantId) {
       this.patchMessage(this.currentAssistantId, (msg) => ({
         ...msg,
         streaming: false,
       }));
+    }
+    this.thinkingStartedAt = undefined;
+    this.currentAssistantId = undefined;
+
+    if (this.status.state !== "busy") {
+      return;
+    }
+
+    this.abortedTurn = true;
+    if (this.abortedTurnTimer) {
+      clearTimeout(this.abortedTurnTimer);
+    }
+    // If omp never emits agent_end for the abort, settle locally so the queue
+    // cannot get stuck behind a permanent "busy" state.
+    this.abortedTurnTimer = setTimeout(() => {
+      this.abortedTurnTimer = undefined;
+      this.finishAbortedTurn();
+    }, 500);
+  }
+
+  private finishAbortedTurn(): void {
+    if (!this.abortedTurn) {
+      return;
+    }
+    this.abortedTurn = false;
+    if (this.abortedTurnTimer) {
+      clearTimeout(this.abortedTurnTimer);
+      this.abortedTurnTimer = undefined;
+    }
+    if (this.pendingPrompts.length > 0) {
+      this.flushQueuedPrompt();
+      return;
     }
     if (this.status.state === "busy") {
       this.setStatus({ state: "ready", detail: "Stopped" });
@@ -499,18 +541,6 @@ export class SessionManager {
     this.setStatus({ state: "busy", detail: "Generating…" });
     this.notify();
     this.client.prompt(composed);
-  }
-
-  private clearQueuedPrompts(): void {
-    const queuedIds = new Set(this.pendingPrompts.map((item) => item.id));
-    this.pendingPrompts = [];
-    const nextMessages = this.messages.filter(
-      (message) => !queuedIds.has(message.id) && !message.queued,
-    );
-    if (nextMessages.length !== this.messages.length) {
-      this.messages = nextMessages;
-      this.notify();
-    }
   }
 
   private flushQueuedPrompt(): void {
@@ -595,6 +625,11 @@ export class SessionManager {
   }
 
   private markTurnComplete(): void {
+    // Stop requested: this settle belongs to the aborted turn — resume queue.
+    if (this.abortedTurn) {
+      this.finishAbortedTurn();
+      return;
+    }
     // Ignore duplicate settle attempts once we have already left the busy state.
     if (this.status.state !== "busy") {
       return;
