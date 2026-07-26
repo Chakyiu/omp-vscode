@@ -83,6 +83,7 @@
     { id: "mode", label: "/mode", detail: "Select mode" },
     { id: "attach", label: "/attach", detail: "Attach files" },
     { id: "folder", label: "/folder", detail: "Attach a folder" },
+    { id: "terminal", label: "/terminal", detail: "Attach terminal / CMD output" },
     { id: "usage", label: "/usage", detail: "Show context usage" },
     { id: "history", label: "/history", detail: "Switch chat tabs" },
     { id: "help", label: "/help", detail: "List available commands" },
@@ -2263,7 +2264,7 @@
     suggestHeaderEl.textContent = suggest.kind === "command" ? "Commands" : "Mention file or folder";
     suggestListEl.innerHTML = suggest.items.map(function (item, index) {
       const active = index === suggest.active ? " active" : "";
-      const icon = suggest.kind === "command" ? "⌘" : (item.kind === "folder" ? "📁" : "📄");
+      const icon = suggest.kind === "command" ? "⌘" : (item.fsPath === "omp-chat://terminal" || item.path === "terminal" ? "💻" : (item.kind === "folder" ? "📁" : "📄"));
       const title = escapeHtml(item.label || item.path || item.id || "");
       const detail = escapeHtml(item.detail || item.path || "");
       return (
@@ -2296,6 +2297,14 @@
   function applySuggestItem(item) {
     if (!item) return;
     if (suggest.kind === "file") {
+      if (item.fsPath === "omp-chat://terminal" || item.path === "terminal") {
+        deleteComposerRange(suggest.start, suggest.end);
+        closeSuggest();
+        vscode.postMessage({ type: "attachTerminal" });
+        autosize();
+        inputEl.focus();
+        return;
+      }
       // Keep @mentions inline as chips in the composer (omp resolves @path from cwd).
       let mentionPath = String(item.path || item.fsPath || "").replace(/\\/g, "/");
       if (item.kind === "folder" && mentionPath && mentionPath.slice(-1) !== "/") {

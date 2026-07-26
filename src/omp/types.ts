@@ -177,6 +177,7 @@ export type WebviewToHost =
   | { type: "attachMenu" }
   | { type: "attachFiles" }
   | { type: "attachFolder" }
+  | { type: "attachTerminal" }
   | { type: "attachPaths"; paths: string[] }
   | {
       type: "attachImage";

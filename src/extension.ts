@@ -4,6 +4,7 @@ import { disposeErrorLog, initErrorLog, logError, showErrorLog } from "./omp/err
 import { invalidateOmpModelCache, preloadOmpModels } from "./omp/modelCatalog";
 import { type OpenSessionsState, TabManager } from "./omp/tabManager";
 import { disposeToolFileLog, showToolFileLog } from "./omp/toolFileLog";
+import { terminalCapture } from "./omp/terminalCapture";
 
 function workspaceCwd(): string {
   const folder = vscode.workspace.workspaceFolders?.[0];
@@ -44,6 +45,8 @@ function readOpenSessions(context: vscode.ExtensionContext): OpenSessionsState |
 
 export function activate(context: vscode.ExtensionContext): void {
   initErrorLog(context);
+  terminalCapture.start();
+  context.subscriptions.push(terminalCapture);
 
   const openSessionsStore = {
     get(): OpenSessionsState | undefined {
@@ -130,6 +133,12 @@ export function activate(context: vscode.ExtensionContext): void {
         await provider.attachPaths(selected.map((item) => item.fsPath));
       },
     ),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("ompChat.attachTerminal", async () => {
+      await provider.attachTerminal();
+    }),
   );
 
   context.subscriptions.push(

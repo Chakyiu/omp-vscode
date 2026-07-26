@@ -131,6 +131,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.postState();
   }
 
+  async attachTerminal(): Promise<void> {
+    const attached = await this.attachments.attachTerminalOutput();
+    if (!attached) {
+      return;
+    }
+    await vscode.commands.executeCommand("ompChat.sidebar.focus");
+    this.postState();
+  }
+
   private async onMessage(msg: WebviewToHost): Promise<void> {
     switch (msg.type) {
       case "ready":
@@ -197,6 +206,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case "attachFolder":
         await this.attachFolder();
+        break;
+      case "attachTerminal":
+        await this.attachTerminal();
         break;
       case "attachPaths":
         await this.attachments.attachPaths(msg.paths || []);
@@ -777,6 +789,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         { label: "Restart session", description: "Reload omp RPC bridge" },
         { label: "Attach current file" },
         { label: "Attach selection" },
+        { label: "Attach terminal output" },
       ],
       { title: "OMP" },
     );
@@ -797,6 +810,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       await vscode.commands.executeCommand("ompChat.attachCurrentFile");
     } else if (picked.label === "Attach selection") {
       await vscode.commands.executeCommand("ompChat.sendSelection");
+    } else if (picked.label === "Attach terminal output") {
+      await this.attachTerminal();
     }
   }
 
@@ -809,6 +824,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async collectFileSuggestions(query: string): Promise<FileSuggestItem[]> {
     const q = query.trim().toLowerCase();
     const results: FileSuggestItem[] = [];
+    // Special @terminal entry — attaches recent integrated-terminal command output.
+    if (!q || "terminal".startsWith(q) || "cmd".startsWith(q) || "shell".startsWith(q)) {
+      results.push({
+        path: "terminal",
+        fsPath: "omp-chat://terminal",
+        kind: "file",
+        label: "Terminal output",
+        detail: "Attach recent VS Code terminal / CMD output",
+      });
+    }
+
     const seen = new Set<string>();
     const ignoreDirs = new Set([
       "node_modules",
@@ -924,6 +950,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     results.sort((a, b) => {
       const boost = (item: FileSuggestItem): number => {
+        if (item.fsPath === "omp-chat://terminal") return 1100;
         if (item.label === "Current file") return 1000;
         if (item.detail === "Open editor") return 500;
         if (item.kind === "folder") {
@@ -970,6 +997,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       case "folder":
         await this.attachFolder();
         break;
+      case "terminal":
+      case "cmd":
+        await this.attachTerminal();
+        break;
       case "usage":
         {
           const usage = this.sessions.getContextUsage();
@@ -989,7 +1020,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case "help":
         vscode.window.showInformationMessage(
-          "Commands: /new /stop /restart /model /mode /attach /folder /usage /history /help — Files/folders: type @ to mention inline",
+          "Commands: /new /stop /restart /model /mode /attach /folder /terminal /usage /history /help — Files/folders: type @ to mention inline; @terminal attaches CMD output",
         );
         break;
       default:

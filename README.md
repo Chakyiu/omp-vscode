@@ -121,5 +121,8 @@ code --install-extension oh-my-pi-chat-0.1.0.vsix
 - Paste an image from the clipboard into the input (shows as an inline chip)
 - Drag & drop files onto the chat panel
 - Right-click in Explorer → **OMP: Attach to Chat**
+- Attach recent terminal / CMD output via **📎 → Attach terminal output**, `/terminal`, `@terminal`, or the terminal context menu
 
-Paperclip/drag attachments are sent to `omp` as `@/absolute/path` mentions (images/files/folders). `@` autocomplete inserts an inline `@path` mention in the prompt. Code selections are inlined as fenced blocks.
+Paperclip/drag attachments are sent to `omp` as `@/absolute/path` mentions (images/files/folders). `@` autocomplete inserts an inline `@path` mention in the prompt. Code selections and terminal command output are inlined as fenced blocks.
+
+> Terminal capture uses VS Code **shell integration** (default for bash/zsh/pwsh/fish). Run a command in the integrated terminal first, then attach it.

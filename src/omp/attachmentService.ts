@@ -4,6 +4,10 @@ import * as path from "path";
 import { randomUUID } from "crypto";
 import * as vscode from "vscode";
 import type { Attachment, AttachmentKind } from "./types";
+import {
+  type CapturedTerminalCommand,
+  terminalCapture,
+} from "./terminalCapture";
 type AttachmentHost = {
   addAttachment(attachment: Omit<import("./types").Attachment, "id"> & { id?: string }): Attachment;
 };
@@ -207,6 +211,55 @@ export class AttachmentService {
     });
   }
 
+  async attachTerminalOutput(): Promise<boolean> {
+    const recent = terminalCapture.getRecent(20);
+    if (recent.length === 0) {
+      vscode.window.showInformationMessage(
+        "No terminal commands captured yet. Run a command in the VS Code terminal (shell integration required), then try again.",
+      );
+      return false;
+    }
+
+    const active = terminalCapture.getLastForActiveTerminal();
+    const items = recent.map((entry, index) => {
+      const exit =
+        entry.exitCode == null ? "" : entry.exitCode === 0 ? "exit 0" : `exit ${entry.exitCode}`;
+      const preview = (entry.output || "").replace(/\s+/g, " ").trim().slice(0, 80);
+      return {
+        label: entry.command,
+        description: [entry.terminalName, exit].filter(Boolean).join(" · "),
+        detail: preview || "(no output)",
+        entry,
+        picked: index === 0 && active?.id === entry.id,
+      };
+    });
+
+    const pick = await vscode.window.showQuickPick(items, {
+      title: "Attach terminal command output",
+      placeHolder: "Choose a recent terminal command",
+      matchOnDescription: true,
+      matchOnDetail: true,
+    });
+    if (!pick) {
+      return false;
+    }
+    this.attachTerminalEntry(pick.entry);
+    return true;
+  }
+
+  attachTerminalEntry(entry: CapturedTerminalCommand): Attachment {
+    const label = `terminal: ${entry.command}`.slice(0, 120);
+    const content = terminalCapture.formatEntry(entry);
+    return this.sessions.addAttachment({
+      kind: "text",
+      label,
+      path: label,
+      language: "shellsession",
+      content,
+      size: Buffer.byteLength(content, "utf8"),
+    });
+  }
+
   async showAttachMenu(): Promise<void> {
     const pick = await vscode.window.showQuickPick(
       [
@@ -214,6 +267,7 @@ export class AttachmentService {
         { label: "$(folder) Attach folder…", id: "folder" },
         { label: "$(file-code) Attach current file", id: "current" },
         { label: "$(selection) Attach selection", id: "selection" },
+        { label: "$(terminal) Attach terminal output", id: "terminal" },
       ],
       { title: "Attach to OMP chat", placeHolder: "Choose what to attach" },
     );
@@ -234,6 +288,10 @@ export class AttachmentService {
     }
     if (pick.id === "selection") {
       await vscode.commands.executeCommand("ompChat.sendSelection");
+      return;
+    }
+    if (pick.id === "terminal") {
+      await this.attachTerminalOutput();
     }
   }
 }

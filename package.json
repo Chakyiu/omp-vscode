@@ -32,7 +32,8 @@
     "onCommand:ompChat.attachFiles",
     "onCommand:ompChat.attachFolder",
     "onCommand:ompChat.attachMenu",
-    "onCommand:ompChat.attachExplorer"
+    "onCommand:ompChat.attachExplorer",
+    "onCommand:ompChat.attachTerminal"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -103,6 +104,11 @@
         "icon": "$(attach)"
       },
       {
+        "command": "ompChat.attachTerminal",
+        "title": "OMP: Attach Terminal Output",
+        "icon": "$(terminal)"
+      },
+      {
         "command": "ompChat.showToolLog",
         "title": "OMP: Show File Touch Log",
         "icon": "$(output)"
@@ -150,6 +156,12 @@
       "explorer/context": [
         {
           "command": "ompChat.attachExplorer",
+          "group": "ompChat@1"
+        }
+      ],
+      "terminal/context": [
+        {
+          "command": "ompChat.attachTerminal",
           "group": "ompChat@1"
         }
       ]
