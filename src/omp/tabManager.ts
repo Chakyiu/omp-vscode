@@ -1,6 +1,7 @@
-import * as vscode from "vscode";
 import { randomUUID } from "crypto";
-import { SessionManager, type SessionIdStore } from "./sessionManager";
+import * as vscode from "vscode";
+import { cleanChatTitle, titleFromUserText } from "./chatTitle";
+import { type SessionIdStore, SessionManager } from "./sessionManager";
 import type {
   Attachment,
   ChatMessage,
@@ -44,23 +45,15 @@ function titleFromMessages(messages: ChatMessage[]): string | undefined {
   if (!textPart || textPart.kind !== "text") {
     return undefined;
   }
-  let text = textPart.text
-    .replace(/@[^\n]+/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!text) {
-    return "New chat";
-  }
-  if (text.length > 28) {
-    text = `${text.slice(0, 28)}…`;
-  }
-  return text;
+  return titleFromUserText(textPart.text) || "New chat";
 }
 
 export class TabManager {
   private readonly tabs = new Map<string, TabRecord>();
   private readonly tabSessionIds = new Map<string, string>();
   private readonly tabTitles = new Map<string, string>();
+  /** Tabs whose title was set by the user — do not overwrite with agent titles. */
+  private readonly manualTitles = new Set<string>();
   private order: string[] = [];
   private activeId = "";
   private readonly _onDidChange = new vscode.EventEmitter<void>();
@@ -81,10 +74,7 @@ export class TabManager {
       for (let i = 0; i < sessionIds.length; i += 1) {
         this.createTab(false, sessionIds[i].trim(), titles[i]);
       }
-      const activeIndex = Math.min(
-        Math.max(saved?.activeIndex ?? 0, 0),
-        this.order.length - 1,
-      );
+      const activeIndex = Math.min(Math.max(saved?.activeIndex ?? 0, 0), this.order.length - 1);
       this.activeId = this.order[activeIndex] ?? this.order[0] ?? "";
       this.persistOpenSessions();
       this.notify();
@@ -112,9 +102,8 @@ export class TabManager {
         const title = this.tabTitles.get(tabId) ?? this.tabs.get(tabId)?.title;
         return { tabId, sessionId, title };
       })
-      .filter(
-        (entry): entry is { tabId: string; sessionId: string; title: string | undefined } =>
-          Boolean(entry),
+      .filter((entry): entry is { tabId: string; sessionId: string; title: string | undefined } =>
+        Boolean(entry),
       );
 
     if (entries.length === 0) {
@@ -150,12 +139,22 @@ export class TabManager {
   }
 
   private syncTitle(tab: TabRecord): void {
+    const manual = this.manualTitles.has(tab.id) ? this.tabTitles.get(tab.id) : undefined;
+    const agentTitle = tab.session.getSessionTitle();
+    const saved = this.tabTitles.get(tab.id);
     const fromMessages = titleFromMessages(tab.session.getMessages());
-    const next = fromMessages ?? this.tabTitles.get(tab.id) ?? "New chat";
+    // Manual rename wins; else agent/omp title, then restored/history, then first prompt.
+    const next = manual || agentTitle || saved || fromMessages || "New chat";
     if (tab.title !== next) {
       tab.title = next;
     }
-    if (fromMessages && this.tabTitles.get(tab.id) !== fromMessages) {
+    if (manual) {
+      return;
+    }
+    if (agentTitle && saved !== agentTitle) {
+      this.tabTitles.set(tab.id, agentTitle);
+      this.persistOpenSessions();
+    } else if (!saved && fromMessages) {
       this.tabTitles.set(tab.id, fromMessages);
       this.persistOpenSessions();
     }
@@ -254,9 +253,11 @@ export class TabManager {
     this.activeId = id;
     this.persistOpenSessions();
     this.notify();
-    void this.active().ensureStarted().catch(() => {
-      // surfaced via status
-    });
+    void this.active()
+      .ensureStarted()
+      .catch(() => {
+        // surfaced via status
+      });
   }
 
   async closeTab(id: string): Promise<void> {
@@ -270,6 +271,7 @@ export class TabManager {
     this.tabs.delete(id);
     this.tabSessionIds.delete(id);
     this.tabTitles.delete(id);
+    this.manualTitles.delete(id);
     this.order = this.order.filter((item) => item !== id);
 
     if (this.order.length === 0) {
@@ -284,7 +286,9 @@ export class TabManager {
 
     if (this.activeId === id) {
       this.activeId = this.order[this.order.length - 1] || this.order[0];
-      void this.active().ensureStarted().catch(() => undefined);
+      void this.active()
+        .ensureStarted()
+        .catch(() => undefined);
     }
     this.persistOpenSessions();
     this.notify();
@@ -328,7 +332,10 @@ export class TabManager {
     await this.active().send(text);
   }
 
-  recallQueued(id: string, textHint?: string): { text: string; attachments: Attachment[] } | undefined {
+  recallQueued(
+    id: string,
+    textHint?: string,
+  ): { text: string; attachments: Attachment[] } | undefined {
     return this.active().recallQueued(id, textHint);
   }
 
@@ -359,6 +366,32 @@ export class TabManager {
     }
     this.syncTitle(tab);
     return tab.title;
+  }
+
+  /** Manually set a tab title (and persist it across reloads). */
+  renameTab(id: string, title: string): boolean {
+    const tab = this.tabs.get(id);
+    if (!tab) {
+      return false;
+    }
+    const next = cleanChatTitle(title) || "New chat";
+    tab.title = next;
+    this.tabTitles.set(id, next);
+    this.manualTitles.add(id);
+    this.persistOpenSessions();
+    this.notify();
+    return true;
+  }
+
+  /** Restart every open tab so settings like autoTitle take effect. */
+  async restartAll(): Promise<void> {
+    for (const id of [...this.order]) {
+      const tab = this.tabs.get(id);
+      if (!tab) {
+        continue;
+      }
+      await tab.session.restart();
+    }
   }
 
   getSessionIdForTab(id: string): string | undefined {
@@ -415,6 +448,7 @@ export class TabManager {
     this.tabs.clear();
     this.tabSessionIds.clear();
     this.tabTitles.clear();
+    this.manualTitles.clear();
     this.order = [];
     this.activeId = "";
     for (const tab of all) {

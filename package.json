@@ -6,7 +6,7 @@
     "type": "git",
     "url": "https://github.com/Chakyiu/omp-vscode"
   },
-  "version": "0.7.6",
+  "version": "0.7.8",
   "publisher": "ChakyiuLI",
   "license": "MIT",
   "engines": {
@@ -95,7 +95,7 @@
       },
       {
         "command": "ompChat.attachMenu",
-        "title": "OMP: Attach\u2026",
+        "title": "OMP: Attach…",
         "icon": "$(attach)"
       },
       {
@@ -215,6 +215,11 @@
           "type": "boolean",
           "default": true,
           "description": "Restore all open omp chat tabs/sessions when the chat bridge starts (survives VS Code restarts/kills). Disable to always start a blank session."
+        },
+        "ompChat.autoTitle": {
+          "type": "boolean",
+          "default": true,
+          "description": "Let omp generate a short session title after the first message (uses the tiny/smol title model). Shows on chat tabs and in history. Changing this offers a restart so open chats pick it up."
         },
         "ompChat.extraArgs": {
           "type": "array",

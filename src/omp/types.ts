@@ -236,4 +236,9 @@ export interface OmpClientOptions {
   /** Resume a specific omp session id (takes precedence over --continue). */
   resumeSessionId?: string;
   extraArgs?: string[];
+  /**
+   * Absolute path to the omp extension that auto-generates session titles in
+   * RPC mode. Omit / undefined to leave title generation disabled.
+   */
+  titleExtensionPath?: string;
 }

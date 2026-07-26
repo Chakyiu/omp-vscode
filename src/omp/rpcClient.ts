@@ -1,4 +1,4 @@
-import { ChildProcessWithoutNullStreams, spawn } from "child_process";
+import { type ChildProcessWithoutNullStreams, spawn } from "child_process";
 import { EventEmitter } from "events";
 import * as readline from "readline";
 import type { AssistantMessageEvent, OmpClientOptions, OmpRpcEvent } from "./types";
@@ -62,13 +62,24 @@ export class OmpRpcClient extends EventEmitter {
     } else if (this.options.continueLastSession) {
       args.push("--continue");
     }
+    if (this.options.titleExtensionPath) {
+      args.push("--extension", this.options.titleExtensionPath);
+    }
     if (this.options.extraArgs?.length) {
       args.push(...this.options.extraArgs);
     }
 
+    // Opt into omp setTitle / title UI events so the chat host can show
+    // agent-generated session names on tabs. Generation itself is restored by
+    // the optional title extension above (RPC disables it by default).
+    const env = {
+      ...process.env,
+      PI_RPC_EMIT_TITLE: process.env.PI_RPC_EMIT_TITLE || "1",
+    };
+
     this.proc = spawn(this.options.ompPath, args, {
       cwd: this.options.cwd,
-      env: process.env,
+      env,
       stdio: ["pipe", "pipe", "pipe"],
     });
 
@@ -250,10 +261,7 @@ export class OmpRpcClient extends EventEmitter {
       all.push(...messages);
       let cursor = data.nextCursor;
       while (typeof cursor === "string" && cursor) {
-        const next = await this.request(
-          { type: "get_messages_page", cursor, limit: 64 },
-          30_000,
-        );
+        const next = await this.request({ type: "get_messages_page", cursor, limit: 64 }, 30_000);
         if (next.success === false) {
           throw new Error(String(next.error ?? "get_messages_page failed"));
         }
@@ -285,10 +293,7 @@ export class OmpRpcClient extends EventEmitter {
   /** Answer an omp `extension_ui_request` (confirm / select / input / editor). */
   respondExtensionUi(
     id: string,
-    response:
-      | { confirmed: boolean }
-      | { value: string }
-      | { cancelled: true; timedOut?: boolean },
+    response: { confirmed: boolean } | { value: string } | { cancelled: true; timedOut?: boolean },
   ): void {
     this.send({ type: "extension_ui_response", id, ...response });
   }

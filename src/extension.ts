@@ -2,9 +2,10 @@ import * as vscode from "vscode";
 import { ChatViewProvider } from "./chat/chatViewProvider";
 import { disposeErrorLog, initErrorLog, logError, showErrorLog } from "./omp/errorLog";
 import { invalidateOmpModelCache, preloadOmpModels } from "./omp/modelCatalog";
+import { setTitleExtensionRoot } from "./omp/sessionManager";
 import { type OpenSessionsState, TabManager } from "./omp/tabManager";
-import { disposeToolFileLog, showToolFileLog } from "./omp/toolFileLog";
 import { terminalCapture } from "./omp/terminalCapture";
+import { disposeToolFileLog, showToolFileLog } from "./omp/toolFileLog";
 
 function workspaceCwd(): string {
   const folder = vscode.workspace.workspaceFolders?.[0];
@@ -45,6 +46,7 @@ function readOpenSessions(context: vscode.ExtensionContext): OpenSessionsState |
 
 export function activate(context: vscode.ExtensionContext): void {
   initErrorLog(context);
+  setTitleExtensionRoot(context.extensionPath);
   terminalCapture.start();
   context.subscriptions.push(terminalCapture);
 

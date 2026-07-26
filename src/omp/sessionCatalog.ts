@@ -2,6 +2,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import * as readline from "readline";
+import { cleanChatTitle, titleFromUserText } from "./chatTitle";
 
 export interface OmpHistorySession {
   id: string;
@@ -40,20 +41,6 @@ function sameCwd(a: string, b: string): boolean {
   } catch {
     return a === b;
   }
-}
-
-function cleanTitle(text: string, max = 48): string {
-  let next = text
-    .replace(/@[^\n]+/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!next) {
-    return "New chat";
-  }
-  if (next.length > max) {
-    next = `${next.slice(0, max)}…`;
-  }
-  return next;
 }
 
 function textFromUserContent(content: unknown): string | undefined {
@@ -144,11 +131,13 @@ async function readSessionMeta(
         }
       }
 
-      // Enough metadata once we have id + (title or first user prompt).
-      if (id && (title || preview) && lines >= 8) {
+      // Title rows are often appended after the first turn finishes. Keep
+      // scanning until we see one (or hit a higher cap) so history shows the
+      // agent title instead of a truncated first prompt.
+      if (id && title && lines >= 8) {
         break;
       }
-      if (lines >= 80) {
+      if (lines >= 250) {
         break;
       }
     }
@@ -168,11 +157,11 @@ async function readSessionMeta(
     return undefined;
   }
 
-  const display = title || (preview ? cleanTitle(preview) : "New chat");
+  const display = title || titleFromUserText(preview) || "New chat";
   return {
     id,
     title: display,
-    preview: preview ? cleanTitle(preview, 80) : undefined,
+    preview: preview ? cleanChatTitle(preview, 80) : undefined,
     cwd,
     createdAt,
     updatedAt,

@@ -1,5 +1,8 @@
 import { randomUUID } from "crypto";
+import * as fs from "fs";
+import * as path from "path";
 import * as vscode from "vscode";
+import { cleanChatTitle } from "./chatTitle";
 import { logError, logWarn } from "./errorLog";
 import { preloadOmpModels } from "./modelCatalog";
 import { OmpRpcClient } from "./rpcClient";
@@ -22,6 +25,40 @@ import type {
   UiQuestionMethod,
 } from "./types";
 
+/** Absolute extension install root — set from activate() so path resolve works in F5 / odd layouts. */
+let titleExtensionRoot: string | undefined;
+
+export function setTitleExtensionRoot(root: string | undefined): void {
+  titleExtensionRoot = root?.trim() || undefined;
+}
+
+function resolveTitleExtensionPath(): string | undefined {
+  const enabled = vscode.workspace.getConfiguration("ompChat").get<boolean>("autoTitle", true);
+  if (!enabled) {
+    return undefined;
+  }
+
+  const candidates: string[] = [];
+  if (titleExtensionRoot) {
+    candidates.push(path.join(titleExtensionRoot, "media", "omp-extensions", "session-title.js"));
+  }
+  // dist/extension.js → ../media/...
+  candidates.push(path.join(__dirname, "..", "media", "omp-extensions", "session-title.js"));
+  // source-tree / unusual layouts
+  candidates.push(path.join(__dirname, "..", "..", "media", "omp-extensions", "session-title.js"));
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  logWarn("ompChat.autoTitle is on but session-title.js was not found", {
+    root: titleExtensionRoot,
+    candidates,
+  });
+  return undefined;
+}
+
 export interface SessionIdStore {
   get(): string | undefined;
   set(id: string | undefined): void;
@@ -37,6 +74,8 @@ export class SessionManager {
   private sessionModel: SessionModelInfo | null = null;
   private sessionId: string | undefined;
   private sessionFile: string | undefined;
+  /** Agent / omp-generated display title for this session. */
+  private sessionTitle: string | undefined;
   private restoringHistory = false;
   /** Prompts waiting for the current turn to finish before being sent. */
   private pendingPrompts: Array<{ id: string; text: string; composed: string }> = [];
@@ -47,6 +86,8 @@ export class SessionManager {
   private pendingUiQuestions: UiQuestion[] = [];
   /** Wall-clock start for the currently open thinking block. */
   private thinkingStartedAt: number | undefined;
+  /** Delayed get_state polls while waiting for the async title extension. */
+  private titleRefreshTimers: ReturnType<typeof setTimeout>[] = [];
 
   private uiQuestionTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly _onDidChange = new vscode.EventEmitter<void>();
@@ -69,6 +110,24 @@ export class SessionManager {
     const id = this.sessionId ?? this.sessionIdStore?.get();
     const trimmed = id?.trim();
     return trimmed || undefined;
+  }
+
+  /** omp / agent-generated session title, when available. */
+  getSessionTitle(): string | undefined {
+    const trimmed = this.sessionTitle?.trim();
+    return trimmed || undefined;
+  }
+
+  private setSessionTitle(raw: string | undefined): void {
+    const next = raw ? cleanChatTitle(raw) : undefined;
+    if ((this.sessionTitle ?? undefined) === next) {
+      return;
+    }
+    this.sessionTitle = next;
+    if (next) {
+      this.clearTitleRefreshTimers();
+    }
+    this.notify();
   }
 
   /**
@@ -139,6 +198,7 @@ export class SessionManager {
       autoApprove: cfg.get<boolean>("autoApprove", false),
       continueLastSession: cfg.get<boolean>("continueLastSession", false),
       extraArgs: cfg.get<string[]>("extraArgs", []),
+      titleExtensionPath: resolveTitleExtensionPath(),
       ...overrides,
     };
   }
@@ -170,6 +230,17 @@ export class SessionManager {
     this.pendingPrompts = [];
     this.thinkingStartedAt = undefined;
     this.clearUiQuestions({ cancelRemote: false });
+    const resumeId =
+      overrides && "resumeSessionId" in overrides
+        ? overrides.resumeSessionId
+        : (this.sessionId ?? this.sessionIdStore?.get());
+    const continuing =
+      overrides && "continueLastSession" in overrides
+        ? Boolean(overrides.continueLastSession)
+        : Boolean(resumeId);
+    if (!resumeId && !continuing) {
+      this.sessionTitle = undefined;
+    }
     this.setStatus({ state: "starting", detail: "Launching omp…" });
 
     const options = this.readConfig(overrides);
@@ -282,6 +353,7 @@ export class SessionManager {
     this.sessionModel = null;
     this.sessionId = undefined;
     this.sessionFile = undefined;
+    this.sessionTitle = undefined;
     this.notify();
     // Always start a fresh session for New Chat.
     await this.start({ continueLastSession: false, resumeSessionId: undefined });
@@ -677,6 +749,36 @@ export class SessionManager {
     }
     this.setStatus({ state: "ready", detail: "Ready" });
     void this.refreshSessionState();
+    this.scheduleTitleRefresh();
+  }
+
+  /** Title generation runs after agent_end; poll a few times if push events are missed. */
+  private scheduleTitleRefresh(): void {
+    this.clearTitleRefreshTimers();
+    if (this.sessionTitle) {
+      return;
+    }
+    const enabled = vscode.workspace.getConfiguration("ompChat").get<boolean>("autoTitle", true);
+    if (!enabled) {
+      return;
+    }
+    for (const delay of [1500, 5000, 12000]) {
+      const timer = setTimeout(() => {
+        if (this.sessionTitle || !this.client?.isRunning) {
+          this.clearTitleRefreshTimers();
+          return;
+        }
+        void this.refreshSessionState();
+      }, delay);
+      this.titleRefreshTimers.push(timer);
+    }
+  }
+
+  private clearTitleRefreshTimers(): void {
+    for (const timer of this.titleRefreshTimers) {
+      clearTimeout(timer);
+    }
+    this.titleRefreshTimers = [];
   }
 
   private composePrompt(userText: string): string {
@@ -1041,6 +1143,13 @@ export class SessionManager {
       case "extension_ui_request":
         this.handleExtensionUiRequest(event);
         break;
+      case "session_info_update": {
+        const title = String(event.title ?? event.sessionName ?? "").trim();
+        if (title) {
+          this.setSessionTitle(title);
+        }
+        break;
+      }
       default:
         break;
     }
@@ -1245,6 +1354,10 @@ export class SessionManager {
       if (typeof file === "string" && file.trim()) {
         this.sessionFile = file.trim();
       }
+      const sessionName = state.sessionName;
+      if (typeof sessionName === "string" && sessionName.trim()) {
+        this.setSessionTitle(sessionName);
+      }
       const modelRaw = state.model;
       if (modelRaw && typeof modelRaw === "object") {
         const m = modelRaw as Record<string, unknown>;
@@ -1353,11 +1466,17 @@ export class SessionManager {
       return;
     }
 
+    if (method === "setTitle" || method === "set_title") {
+      const title = String(event.title ?? event.text ?? event.message ?? "").trim();
+      if (title) {
+        this.setSessionTitle(title);
+      }
+      return;
+    }
+
     if (
       method === "setWidget" ||
       method === "set_widget" ||
-      method === "setTitle" ||
-      method === "set_title" ||
       method === "set_editor_text" ||
       method === "setEditorText"
     ) {
@@ -1444,6 +1563,7 @@ export class SessionManager {
   }
 
   async dispose(): Promise<void> {
+    this.clearTitleRefreshTimers();
     await this.disposeClient();
     this.setStatus({ state: "stopped" });
     this._onDidChange.dispose();

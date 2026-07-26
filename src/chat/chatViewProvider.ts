@@ -1,13 +1,10 @@
 import * as vscode from "vscode";
 import { AttachmentService } from "../omp/attachmentService";
+import { logError, logWarn, showErrorLog } from "../omp/errorLog";
 import { pickMode, pickModel } from "../omp/modelCatalog";
 import { formatSessionWhen, listOmpSessions } from "../omp/sessionCatalog";
-import {
-  formatSessionPlainText,
-  suggestExportFileName,
-} from "../omp/sessionTranscript";
+import { formatSessionPlainText, suggestExportFileName } from "../omp/sessionTranscript";
 import type { TabManager } from "../omp/tabManager";
-import { logError, logWarn, showErrorLog } from "../omp/errorLog";
 import { showToolFileLog } from "../omp/toolFileLog";
 import type { FileSuggestItem, HostToWebview, WebviewToHost } from "../omp/types";
 
@@ -27,7 +24,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   ) {
     this.attachments = new AttachmentService(sessions, storageUri);
     this.displayName = this.resolveDisplayName();
-    this.mode = vscode.workspace.getConfiguration("ompChat").get<string>("mode", "Agent") || "Agent";
+    this.mode =
+      vscode.workspace.getConfiguration("ompChat").get<string>("mode", "Agent") || "Agent";
 
     this.disposables.push(
       sessions.onDidChange(() => {
@@ -37,6 +35,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     this.disposables.push(
       vscode.workspace.onDidChangeConfiguration((e) => {
+        if (e.affectsConfiguration("ompChat.autoTitle")) {
+          void this.onAutoTitleSettingChanged();
+        }
         if (
           e.affectsConfiguration("ompChat.showThinking") ||
           e.affectsConfiguration("ompChat.model") ||
@@ -44,8 +45,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         ) {
           if (e.affectsConfiguration("ompChat.mode")) {
             this.mode =
-              vscode.workspace.getConfiguration("ompChat").get<string>("mode", "Agent") ||
-              "Agent";
+              vscode.workspace.getConfiguration("ompChat").get<string>("mode", "Agent") || "Agent";
           }
           this.post({
             type: "config",
@@ -262,7 +262,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const raw = String(msg.url || "").trim();
         if (!raw) break;
         try {
-          if (/^[A-Za-z]:\\/.test(raw) || raw.startsWith("/") || raw.startsWith("./") || raw.startsWith("../")) {
+          if (
+            /^[A-Za-z]:\\/.test(raw) ||
+            raw.startsWith("/") ||
+            raw.startsWith("./") ||
+            raw.startsWith("../")
+          ) {
             const uri = vscode.Uri.file(raw);
             await vscode.commands.executeCommand("vscode.open", uri);
           } else {
@@ -303,10 +308,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
           const doc = await vscode.workspace.openTextDocument(uri);
           const editor = await vscode.window.showTextDocument(doc, { preview: false });
-          const line = typeof msg.line === "number" && msg.line >= 1 ? Math.floor(msg.line) : undefined;
+          const line =
+            typeof msg.line === "number" && msg.line >= 1 ? Math.floor(msg.line) : undefined;
           if (line) {
             const endLineRaw =
-              typeof msg.endLine === "number" && msg.endLine >= line ? Math.floor(msg.endLine) : line;
+              typeof msg.endLine === "number" && msg.endLine >= line
+                ? Math.floor(msg.endLine)
+                : line;
             const maxLine = Math.max(doc.lineCount, 1);
             const startLine = Math.min(line, maxLine) - 1;
             const endLine = Math.min(endLineRaw, maxLine) - 1;
@@ -328,7 +336,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-    private resolveWorkspaceUri(pathValue: string): vscode.Uri | undefined {
+  private resolveWorkspaceUri(pathValue: string): vscode.Uri | undefined {
     let value = String(pathValue || "").trim();
     if (!value) {
       return undefined;
@@ -363,7 +371,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     return vscode.Uri.joinPath(folder.uri, value);
   }
-
 
   private currentModelLabel(): string {
     return this.sessions.getModelLabel();
@@ -561,7 +568,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 </html>`;
   }
 
-
   private async pickModelAndApply(): Promise<void> {
     const cfg = vscode.workspace.getConfiguration("ompChat");
     const ompPath = cfg.get<string>("ompPath", "omp") || "omp";
@@ -597,7 +603,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       displayName: this.displayName,
     });
   }
-
 
   private async showTabPicker(): Promise<void> {
     const cwd = this.sessions.getWorkspaceCwdPath();
@@ -638,11 +643,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const isOpen = openIds.has(session.id);
         const isActive = session.id === activeOmpSessionId;
         const when = formatSessionWhen(session.updatedAt);
-        const icon = isActive
-          ? "$(check)"
-          : isOpen
-            ? "$(comment-discussion)"
-            : "$(history)";
+        const icon = isActive ? "$(check)" : isOpen ? "$(comment-discussion)" : "$(history)";
         return {
           label: `${icon} ${session.title}`,
           description: [isOpen ? "open" : undefined, when].filter(Boolean).join(" · "),
@@ -674,11 +675,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.postState();
   }
 
-
   private async showTabContextMenu(tabId: string): Promise<void> {
     const title = this.sessions.getTabTitle(tabId) || "Chat";
     const picked = await vscode.window.showQuickPick(
       [
+        {
+          label: "$(edit) Rename…",
+          description: "Set a custom tab title",
+          action: "rename" as const,
+        },
         {
           label: "$(notebook) View as Plain Text",
           description: "Open full session record in an editor",
@@ -710,7 +715,59 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.postState();
       return;
     }
+    if (picked.action === "rename") {
+      await this.renameTab(tabId, title);
+      return;
+    }
     await this.handleTabTranscriptAction(tabId, picked.action);
+  }
+
+  private async renameTab(tabId: string, currentTitle: string): Promise<void> {
+    const next = await vscode.window.showInputBox({
+      title: "Rename chat",
+      prompt: "Tab title",
+      value: currentTitle === "New chat" ? "" : currentTitle,
+      placeHolder: "Short session title",
+      validateInput: (value) => {
+        if (!value.trim()) {
+          return "Title cannot be empty";
+        }
+        if (value.trim().length > 80) {
+          return "Keep titles under 80 characters";
+        }
+        return undefined;
+      },
+    });
+    if (next == null) {
+      return;
+    }
+    if (!this.sessions.renameTab(tabId, next)) {
+      vscode.window.showWarningMessage("That chat tab is no longer open.");
+      return;
+    }
+    this.postState();
+  }
+
+  private async onAutoTitleSettingChanged(): Promise<void> {
+    const enabled = vscode.workspace.getConfiguration("ompChat").get<boolean>("autoTitle", true);
+    const choice = await vscode.window.showInformationMessage(
+      enabled
+        ? "Auto-title is on. Restart open chats so new sessions load the title extension?"
+        : "Auto-title is off. Restart open chats so current sessions stop generating titles?",
+      "Restart now",
+      "Later",
+    );
+    if (choice !== "Restart now") {
+      return;
+    }
+    try {
+      await this.sessions.restartAll();
+      this.postState();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logError("Failed to restart chats after autoTitle change", err);
+      vscode.window.showErrorMessage(`Could not restart chats: ${message}`);
+    }
   }
 
   private async handleTabTranscriptAction(
@@ -718,7 +775,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     action: "view" | "export" | "copy",
   ): Promise<void> {
     const title = this.sessions.getTabTitle(tabId) || "OMP Session";
-    let messages;
+    let messages: Awaited<ReturnType<TabManager["getMessagesForTab"]>>;
     try {
       messages = await this.sessions.getMessagesForTab(tabId);
     } catch (err) {
@@ -814,7 +871,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       await this.attachTerminal();
     }
   }
-
 
   private async searchFiles(query: string, requestId: number): Promise<void> {
     const files = await this.collectFileSuggestions(query);
@@ -1053,4 +1109,3 @@ function scorePath(pathValue: string, query: string): number {
   }
   return qi === query.length ? 20 : 0;
 }
-

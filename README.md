@@ -7,7 +7,8 @@ It launches a local `omp --mode rpc` session and streams replies, thinking, and 
 ## Features
 
 - Multi-tab chats (each tab is its own `omp` session)
-- Right-click a chat tab to view / export / copy the full session as plain text
+- Agent-generated session titles on tabs (tiny/smol title model; disable with `ompChat.autoTitle`)
+- Right-click a chat tab to rename / view / export / copy the full session as plain text
 - Restores all open omp chat tabs/sessions after VS Code restarts or force-quits
 - History button lists all past omp sessions for the workspace and can resume any of them
 
@@ -64,6 +65,7 @@ Then press **F5** (`Run Extension`) to open an Extension Development Host.
 | `ompChat.approvalMode` | `always-ask` / `write` / `yolo` |
 | `ompChat.autoApprove` | Pass `--auto-approve` |
 | `ompChat.continueLastSession` | Restore all open omp chat tabs/sessions on start (default on; survives VS Code kills) |
+| `ompChat.autoTitle` | Let omp generate a short session title after the first message (default on; restart chats when toggling) |
 | `ompChat.extraArgs` | Extra CLI args |
 | `ompChat.showThinking` | Show/hide thinking blocks in UI |
 | `ompChat.logFileTouches` | Log edit/write/delete touched paths to **OMP File Touches** output channel |
