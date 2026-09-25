@@ -64,6 +64,53 @@ export interface SessionIdStore {
   set(id: string | undefined): void;
 }
 
+function unescapeJsonString(value: string): string {
+  return value.replace(/\\"/g, '"').replace(/\\n/g, " ").replace(/\\\\/g, "\\");
+}
+
+/** Cursor/omp errors embed a JSON blob. Prefer its title and detail over the raw dump. */
+function summarizeProviderError(raw: string): string {
+  const text = raw.replace(/\s+/g, " ").trim();
+  if (!text) {
+    return "Provider request failed";
+  }
+  const title = text.match(/"title"\s*:\s*"((?:\\.|[^"\\])*)"/)?.[1];
+  const detail = text.match(/"detail"\s*:\s*"((?:\\.|[^"\\])*)"/)?.[1];
+  if (title && detail) {
+    return `${unescapeJsonString(title)}. ${unescapeJsonString(detail)}`;
+  }
+  if (detail) {
+    return unescapeJsonString(detail);
+  }
+  if (title) {
+    return unescapeJsonString(title);
+  }
+  return text.length > 280 ? `${text.slice(0, 280)}…` : text;
+}
+
+function partsFromAssistantMessage(message: Record<string, unknown>): MessagePart[] {
+  const content = Array.isArray(message.content) ? message.content : [];
+  const parts: MessagePart[] = [];
+  for (const item of content) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const part = item as Record<string, unknown>;
+    if (part.type === "thinking" && typeof part.thinking === "string" && part.thinking) {
+      parts.push({ kind: "thinking", text: part.thinking, streaming: false });
+      continue;
+    }
+    if (part.type === "text" && typeof part.text === "string" && part.text) {
+      parts.push({ kind: "text", text: part.text });
+    }
+  }
+  const errorRaw = message.errorMessage ?? message.error;
+  if (typeof errorRaw === "string" && errorRaw.trim() && !parts.some((part) => part.kind === "text")) {
+    parts.push({ kind: "text", text: summarizeProviderError(errorRaw) });
+  }
+  return parts;
+}
+
 export class SessionManager {
   private client: OmpRpcClient | undefined;
   private status: SessionStatus = { state: "stopped" };
@@ -1001,6 +1048,22 @@ export class SessionManager {
       case "turn_start":
         this.setStatus({ state: "busy", detail: "Generating…" });
         break;
+      case "message_start": {
+        const message = event.message as Record<string, unknown> | undefined;
+        if (message?.role === "assistant") {
+          // A retry starts a new assistant message. Keep the previous error visible.
+          this.currentAssistantId = undefined;
+          this.ensureAssistantMessage();
+          this.notify();
+        }
+        break;
+      }
+      case "message_end":
+        this.applyAssistantSnapshot(event.message, false);
+        break;
+      case "auto_retry_start":
+        this.noteAutoRetry(event);
+        break;
       case "message_update": {
         const ev =
           (event.assistantMessageEvent as Record<string, unknown> | undefined) ??
@@ -1153,6 +1216,56 @@ export class SessionManager {
       default:
         break;
     }
+  }
+
+  /**
+   * omp keeps the turn "busy" across provider failures and only emits agent_end
+   * after a long automatic retry. Paint the finished message (or the error)
+   * immediately so the sidebar does not sit on Generating… for that wait.
+   */
+  private applyAssistantSnapshot(raw: unknown, streaming: boolean): void {
+    if (!raw || typeof raw !== "object") {
+      return;
+    }
+    const message = raw as Record<string, unknown>;
+    if (message.role != null && message.role !== "assistant") {
+      return;
+    }
+    const parts = partsFromAssistantMessage(message);
+    if (parts.length === 0) {
+      return;
+    }
+    const msg = this.ensureAssistantMessage();
+    this.patchMessage(msg.id, (current) => ({
+      ...current,
+      streaming,
+      parts,
+    }));
+    const errorPart = parts.find((part) => part.kind === "text");
+    const errorRaw = message.errorMessage ?? message.error;
+    if (typeof errorRaw === "string" && errorRaw.trim() && errorPart?.kind === "text" && this.status.state === "busy") {
+      this.setStatus({ state: "busy", detail: errorPart.text });
+    }
+  }
+
+  private noteAutoRetry(event: OmpRpcEvent): void {
+    const attempt = Number(event.attempt);
+    const maxAttempts = Number(event.maxAttempts);
+    const delayMs = Number(event.delayMs);
+    const count =
+      Number.isFinite(attempt) && Number.isFinite(maxAttempts) && maxAttempts > 0
+        ? ` (${attempt}/${maxAttempts})`
+        : "";
+    const delay =
+      Number.isFinite(delayMs) && delayMs >= 1000 ? ` in ${Math.round(delayMs / 1000)}s` : "";
+    const reason =
+      typeof event.errorMessage === "string" && event.errorMessage.trim()
+        ? summarizeProviderError(event.errorMessage)
+        : "";
+    this.setStatus({
+      state: "busy",
+      detail: `Retrying${count}${delay}${reason ? ` · ${reason}` : ""}`,
+    });
   }
 
   private handleAssistantEvent(ev: Record<string, unknown>): void {

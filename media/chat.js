@@ -1300,11 +1300,16 @@
   }
 
 
+  function generatingLabel() {
+    const detail = state.status && state.status.detail ? String(state.status.detail).trim() : "";
+    return detail || "Generating…";
+  }
+
   function generatingHtml() {
     return (
       '<div class="generating" aria-live="polite">' +
         '<span class="generating-spinner" aria-hidden="true"></span>' +
-        '<span class="generating-label">Generating…</span>' +
+        '<span class="generating-label">' + escapeHtml(generatingLabel()) + '</span>' +
       '</div>'
     );
   }
@@ -1338,8 +1343,12 @@
     if (!messagesEl) return;
     const existing = messagesEl.querySelector(":scope > .generating");
     if (shouldShowGeneratingPlaceholder()) {
+      const label = generatingLabel();
       if (!existing) {
         messagesEl.insertAdjacentHTML("beforeend", generatingHtml());
+      } else {
+        const labelEl = existing.querySelector(".generating-label");
+        if (labelEl && labelEl.textContent !== label) labelEl.textContent = label;
       }
     } else if (existing) {
       existing.remove();
